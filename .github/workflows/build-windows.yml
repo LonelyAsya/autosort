@@ -37,26 +37,39 @@ jobs:
       - name: PyInstaller
         run: pyinstaller packaging/autosort.spec --noconfirm
 
-      - name: Проверка запуска exe
-        shell: pwsh
-        run: |
-          $p = Start-Process dist/Autosort/Autosort.exe -PassThru
-          Start-Sleep -Seconds 15
-          if ($p.HasExited) { Get-Content "$env:LOCALAPPDATA/Autosort/autosort.log" -ErrorAction SilentlyContinue; throw "Autosort.exe закрылся сразу после запуска" }
-          Stop-Process -Id $p.Id
-
       - name: Версия
         shell: pwsh
         run: |
           $v = if ("${{ github.ref_type }}" -eq "tag") { "${{ github.ref_name }}".TrimStart("v") } else { "dev-${{ github.run_number }}" }
           "APP_VERSION=$v" >> $env:GITHUB_ENV
 
+      - name: Portable-архив
+        shell: pwsh
+        run: Compress-Archive dist/Autosort "dist/Autosort-portable-$env:APP_VERSION.zip"
+
+      - name: Проверка запуска из распакованного архива (путь с кириллицей и пробелами)
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP "Загрузки пользователя"
+          Expand-Archive "dist/Autosort-portable-$env:APP_VERSION.zip" -DestinationPath $dir
+          $exe = Join-Path $dir "Autosort/Autosort.exe"
+          $log = Join-Path $env:LOCALAPPDATA "Autosort/autosort.log"
+          $p = Start-Process $exe -PassThru
+          Start-Sleep -Seconds 25
+          Get-Content $log -ErrorAction SilentlyContinue
+          Get-Content (Join-Path $env:LOCALAPPDATA "Autosort/crash.log") -ErrorAction SilentlyContinue
+          if ($p.HasExited) { throw "Autosort.exe закрылся сразу после запуска (код $($p.ExitCode))" }
+          $p.Refresh()
+          "Окно: '$($p.MainWindowTitle)'"
+          if (-not $p.MainWindowTitle.StartsWith("Autosort")) { throw "Окно Autosort не появилось" }
+          if (-not (Select-String -Path $log -Pattern "запуск Autosort" -Quiet)) { throw "В журнале нет строки запуска" }
+          Stop-Process -Id $p.Id
+
       - name: Установщик
         shell: pwsh
         run: |
           choco install innosetup -y --no-progress
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" packaging\installer.iss
-          Compress-Archive dist/Autosort/* "dist/Autosort-portable-$env:APP_VERSION.zip"
 
       - uses: actions/upload-artifact@v4
         with:

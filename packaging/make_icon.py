@@ -1,6 +1,6 @@
 """Рисует иконку программы: стопка карточек-фотографий на синем фоне.
 
-python packaging/make_icon.py  →  autosort/data/icon.png и packaging/autosort.ico
+python packaging/make_icon.py  →  autosort/data/icon.png, packaging/autosort.ico и packaging/splash.png
 """
 from pathlib import Path
 
@@ -47,6 +47,11 @@ def main():
 
     (ROOT / "autosort" / "data").mkdir(parents=True, exist_ok=True)
     icon.resize((256, 256), Image.LANCZOS).save(ROOT / "autosort" / "data" / "icon.png")
+    # заставка exe: видна сразу после двойного клика, пока программа загружается
+    splash = Image.new("RGB", (420, 300), (255, 255, 255))
+    small = icon.resize((180, 180), Image.LANCZOS)
+    splash.paste(small, ((420 - 180) // 2, 40), small)
+    splash.save(ROOT / "packaging" / "splash.png")
     icon.save(ROOT / "packaging" / "autosort.ico", sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64),
                                                           (128, 128), (256, 256)])
 

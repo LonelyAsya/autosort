@@ -8,6 +8,7 @@ import threading
 import traceback
 import webbrowser
 from collections import Counter
+from datetime import datetime
 from importlib import resources
 from pathlib import Path
 from typing import Callable
@@ -35,6 +36,8 @@ class App:
         self.stop_flag = threading.Event()
         self.server = None
         self.busy = False
+        self._tagger_key = None
+        self._months_source: Path | None = None
 
         root.title(f"Autosort {__version__} — сортировка медиатеки")
         root.minsize(720, 560)
@@ -45,6 +48,7 @@ class App:
         except Exception:
             pass
         self._build()
+        root.report_callback_exception = self._on_error
         self.reload_config()
         root.protocol("WM_DELETE_WINDOW", self.on_close)
         root.after(100, self._poll)
@@ -132,6 +136,12 @@ class App:
         self.log_text.pack(side="left", fill="both", expand=True)
         scroll.pack(side="right", fill="y")
 
+    def _on_error(self, exc_type, exc, tb) -> None:
+        text = "".join(traceback.format_exception(exc_type, exc, tb))
+        print(text, file=sys.stderr)
+        self.log(text)
+        messagebox.showerror("Autosort", f"Ошибка: {exc}\n\nПодробности в журнале внизу окна.")
+
     # --- связь с фоновой задачей (tkinter можно трогать только из главного потока) ---
 
     def log(self, text: str) -> None:
@@ -169,6 +179,8 @@ class App:
                     self._set_busy(False)
                 elif kind == "open":
                     open_path(event[1])
+                elif kind == "months" and event[1] == self._months_source:
+                    self.month_box.configure(values=[ALL_MONTHS, *event[2]])
         except queue.Empty:
             pass
         self.root.after(100, self._poll)
@@ -192,17 +204,34 @@ class App:
             self.cfg = None
             messagebox.showerror("Autosort", f"Ошибка в настройках {self.config_path}:\n\n{e}")
             return False
-        self.tagger = LazyTagger(self.cfg, self.log)
-        self.source_var.set(str(self.cfg.source))
-        self.target_var.set(str(self.cfg.target))
-        self.by_month_var.set(self.cfg.by_month)
-        months = [ALL_MONTHS]
-        if self.cfg.source.is_dir():
-            months += [m for m in folder_choices(media_folders(self.cfg)) if m]
-        self.month_box.configure(values=months)
-        if self.month_var.get() not in months:
-            self.month_var.set(ALL_MONTHS)
+        cfg = self.cfg
+        tagger_key = (cfg.tagger_enabled, cfg.tagger_model, cfg.tagger_device,
+                      cfg.general_threshold, cfg.character_threshold)
+        if self.tagger is None or tagger_key != self._tagger_key:  # модель не перезагружаем зря
+            self.tagger = LazyTagger(cfg, self.log)
+            self._tagger_key = tagger_key
+        self.source_var.set(str(cfg.source))
+        self.target_var.set(str(cfg.target))
+        self.by_month_var.set(cfg.by_month)
+        if cfg.source != self._months_source:
+            self._months_source = cfg.source
+            self._refresh_months(cfg)
         return True
+
+    def _refresh_months(self, cfg: Config) -> None:
+        """Список год/месяц собирается в фоне: обход большой папки OneDrive может занять время."""
+        self.month_box.configure(values=[ALL_MONTHS])
+        self.month_var.set(ALL_MONTHS)
+
+        def worker():
+            try:
+                months = [m for m in folder_choices(media_folders(cfg)) if m] if cfg.source.is_dir() else []
+            except OSError as e:
+                self.log(f"Не удалось прочитать папку {cfg.source}: {e}")
+                months = []
+            self.events.put(("months", cfg.source, months))
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def choose_folder(self, key: str) -> None:
         current = self.source_var.get() if key == "source" else self.target_var.get()
@@ -367,6 +396,7 @@ def main() -> None:
         log_file = open(folder / "autosort.log", "a", encoding="utf-8", buffering=1)
         sys.stdout = sys.stdout or log_file
         sys.stderr = sys.stderr or log_file
+    print(f"{datetime.now():%Y-%m-%d %H:%M:%S} запуск Autosort {__version__}: {sys.executable}", flush=True)
     os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
     if os.name == "nt":
         try:  # чёткий шрифт на мониторах с масштабированием
@@ -381,6 +411,12 @@ def main() -> None:
     except tk.TclError:
         pass
     App(root)
+    try:  # заставка из exe: закрываем, когда окно уже готово
+        import pyi_splash  # type: ignore[import-not-found]
+
+        pyi_splash.close()
+    except ImportError:
+        pass
     root.mainloop()
 
 

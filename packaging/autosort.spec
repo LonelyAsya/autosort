@@ -31,9 +31,21 @@ a = Analysis(
     noarchive=False,
 )
 pyz = PYZ(a.pure)
+# Заставка видна сразу после двойного клика, пока распаковываются библиотеки.
+splash = Splash(
+    os.path.join(SPECPATH, "splash.png"),
+    binaries=a.binaries,
+    datas=a.datas,
+    text_pos=(20, 270),
+    text_size=11,
+    text_color="#444444",
+    text_default="Autosort запускается…",
+    always_on_top=False,
+)
 exe = EXE(
     pyz,
     a.scripts,
+    splash,
     [],
     exclude_binaries=True,
     name="Autosort",
@@ -41,4 +53,4 @@ exe = EXE(
     console=False,
     upx=False,
 )
-coll = COLLECT(exe, a.binaries, a.datas, name="Autosort", upx=False)
+coll = COLLECT(exe, a.binaries, a.datas, splash.binaries, name="Autosort", upx=False)
