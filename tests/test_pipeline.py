@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from PIL import Image
 
 from autosort.dupes import find_groups, trash_files
@@ -187,3 +189,30 @@ def test_category_by_universe(cfg, db):
     plan = Pipeline(cfg, db, tagger(), progress=False).scan()
     land = next(m for m in plan if m.src.name == "landscape.png")  # на нём saber_(fate)
     assert land.category == "Fate"
+
+
+def test_recategorize_without_tagger(cfg, db):
+    from autosort.config import Category
+
+    make_library(cfg)
+    pipe = Pipeline(cfg, db, tagger(), progress=False)
+    pipe.apply(pipe.scan())
+    old = cfg.target / "Арты" / "Пейзажи" / "2024-05" / "landscape.png"
+    assert old.exists()
+
+    # новая категория выше по приоритету; нейросеть больше не нужна
+    cfg.categories.insert(0, Category("Fate", {"fate"}))
+    pipe = Pipeline(cfg, db, lambda: pytest.fail("тегер не должен вызываться"), progress=False)
+    changed, plan = pipe.recategorize()
+    assert changed == 1
+    assert [(m.src, m.dst) for m in plan] == [(old, cfg.target / "Арты" / "Fate" / "2024-05" / "landscape.png")]
+    pipe.apply(plan)
+    assert not old.parent.exists()  # опустевшая папка убрана
+    row = db.get(plan[0].file_id)
+    assert (row["category"], row["status"]) == ("Fate", "moved")
+    assert {t["tag"] for t in db.tags_of(row["id"]) if t["kind"] == "category"} == {"Пейзажи", "Животные"}
+
+    # откат возвращает в старую папку, файл остаётся «разложенным»
+    assert pipe.undo() == 1
+    assert old.exists()
+    assert db.get(row["id"])["status"] == "moved"

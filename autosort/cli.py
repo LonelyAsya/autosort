@@ -57,6 +57,8 @@ def main(argv: list[str] | None = None) -> None:
         p.add_argument("--port", type=int, default=8765)
         p.add_argument("--no-browser", action="store_true", help="не открывать браузер автоматически")
 
+    p = sub.add_parser("recategorize", help="Пересчитать категории по тегам из базы (без нейросети и скачивания)")
+    p.add_argument("-y", "--yes", action="store_true", help="не спрашивать подтверждение перекладки")
     p = sub.add_parser("report", help="Сделать отчёт (report.txt)")
     p.add_argument("-o", "--output", help="куда сохранить отчёт")
     p = sub.add_parser("undo", help="Откатить последний перенос (или указанный)")
@@ -98,6 +100,15 @@ def run(args, cfg, db: Database) -> None:
             n = Pipeline(cfg, db).hash_library()
             print(f"Новых отпечатков: {n}")
         serve(cfg, db, args.port, not args.no_browser)
+
+    elif args.cmd == "recategorize":
+        pipe = Pipeline(cfg, db)
+        changed, plan = pipe.recategorize()
+        print(f"Категория изменилась у артов: {changed}")
+        if plan:
+            print_plan_summary(plan, cfg)
+            if args.yes or input("Переложить уже разложенные? [y/N] ").strip().lower() in ("y", "д", "да", "yes"):
+                pipe.apply(plan)
 
     elif args.cmd == "report":
         from .report import build_report

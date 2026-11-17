@@ -1,4 +1,4 @@
-; Установщик Inno Setup: ISCC packaging\installer.iss (версия — из переменной APP_VERSION)
+﻿; Установщик Inno Setup: ISCC packaging\installer.iss (версия — из переменной APP_VERSION)
 #define AppVersion GetEnv("APP_VERSION")
 #if AppVersion == ""
   #define AppVersion "dev"
@@ -18,6 +18,8 @@ OutputDir=..\dist
 OutputBaseFilename=Autosort-Setup-{#AppVersion}
 SetupIconFile=autosort.ico
 UninstallDisplayIcon={app}\Autosort.exe
+UninstallDisplayName=Autosort
+CloseApplications=yes
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
@@ -35,7 +37,27 @@ Source: "..\dist\Autosort\*"; DestDir: "{app}"; Flags: ignoreversion recursesubd
 
 [Icons]
 Name: "{group}\Autosort"; Filename: "{app}\Autosort.exe"
+Name: "{group}\Удалить Autosort"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\Autosort"; Filename: "{app}\Autosort.exe"; Tasks: desktopicon
 
 [Run]
 Filename: "{app}\Autosort.exe"; Description: "{cm:LaunchProgram,Autosort}"; Flags: nowait postinstall skipifsilent
+
+[Code]
+// После удаления программы спрашиваем, убрать ли и данные пользователя.
+// Фото и разложенные папки в OneDrive не трогаются никогда.
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+begin
+  if CurUninstallStep = usPostUninstall then
+    if SuppressibleMsgBox(
+         'Программа удалена.' + #13#10#13#10 +
+         'Удалить также настройки, списки тегов, базу с тегами и журналом переносов ' +
+         'и скачанную нейросеть (~450 МБ)?' + #13#10#13#10 +
+         'Ваши фото и разложенные папки не затрагиваются в любом случае. ' +
+         'Без базы откатить прошлые переносы будет нельзя.',
+         mbConfirmation, MB_YESNO or MB_DEFBUTTON2, IDNO) = IDYES then
+    begin
+      DelTree(ExpandConstant('{localappdata}\Autosort'), True, True, True);
+      DelTree(ExpandConstant('{%USERPROFILE}\.cache\huggingface\hub\models--SmilingWolf--wd-swinv2-tagger-v3'), True, True, True);
+    end;
+end;

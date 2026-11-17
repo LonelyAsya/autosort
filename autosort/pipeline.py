@@ -11,7 +11,7 @@ from typing import Callable, Iterator
 
 from tqdm import tqdm
 
-from .analyze import Analyzer, Tagger, hash_media
+from .analyze import Analyzer, Tagger, hash_media, match_categories
 from .config import Config
 from .db import Database
 from .media import is_media
@@ -221,6 +221,8 @@ class Pipeline:
                 continue
             self.db.set_location(m.file_id, dst, "moved")
             self.db.journal_state(move_id, "done")
+            if self._in_target(m.src):  # перекладка внутри результата: убираем опустевшие папки
+                remove_empty_dirs(m.src.parent, self.cfg.target)
             done += 1
         self.log(f"Перенесено файлов: {done}. Номер переноса для отката: {batch}")
         return batch
@@ -240,12 +242,44 @@ class Pipeline:
                 continue
             src.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(str(dst), str(src))
-            self.db.set_location(m["file_id"], src, "analyzed")
+            self.db.set_location(m["file_id"], src, "moved" if self._in_target(src) else "analyzed")
             self.db.journal_state(m["id"], "undone")
             remove_empty_dirs(dst.parent, self.cfg.target)
             restored += 1
         self.log(f"Возвращено на место: {restored} (перенос №{batch})")
         return restored
+
+    def _in_target(self, path: Path) -> bool:
+        return self.cfg.target.resolve() in path.resolve().parents
+
+    # --- пересчёт категорий по тегам из базы ---
+
+    def recategorize(self) -> tuple[int, list[PlannedMove]]:
+        """Применяет текущие списки тегов к уже разобранным артам без нейросети и без скачивания.
+
+        Возвращает, у скольких артов сменилась категория, и план перекладки тех,
+        что уже разложены по папкам. Ещё не разложенные просто получат новую категорию.
+        """
+        rows = self.db.conn.execute(
+            "SELECT * FROM files WHERE type = 'art' AND status IN ('analyzed', 'moved')").fetchall()
+        changed = 0
+        plan: list[PlannedMove] = []
+        reserved: set[Path] = set()
+        for row in self._iter(rows, "Категории"):
+            tags = {t["tag"]: t["score"] for t in self.db.tags_of(row["id"])
+                    if t["kind"] in ("general", "character", "universe")}
+            cats = match_categories(tags, self.cfg)
+            category = cats[0] if cats else self.cfg.default_category
+            self.db.set_category(row["id"], category, cats[1:])
+            if category == row["category"]:
+                continue
+            changed += 1
+            if row["status"] == "moved":
+                current = Path(row["path"])
+                dst = unique_path(self.target_for({**dict(row), "category": category}, current.name), reserved)
+                reserved.add(dst)
+                plan.append(PlannedMove(row["id"], current, dst, "art", category))
+        return changed, plan
 
     # --- только отпечатки (для режима «Только дубли») ---
 

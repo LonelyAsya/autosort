@@ -89,7 +89,7 @@ class App:
         self.by_month_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(sort, text="Внутри категорий сохранять папки год/месяц",
                         variable=self.by_month_var, command=self.toggle_by_month).grid(
-            row=2, column=0, columnspan=4, sticky="w", **pad)
+            row=2, column=0, columnspan=3, sticky="w", **pad)
 
         self.buttons: list[ttk.Button] = []
 
@@ -105,6 +105,7 @@ class App:
         button(sort, "Разложить", self.do_sort, 1, 1)
         button(sort, "Только сканировать", self.do_scan, 1, 2)
         button(sort, "Открыть результат", lambda: self.open_folder("target"), 1, 3)
+        button(sort, "Пересчитать категории", self.do_recategorize, 2, 3)
 
         other = ttk.LabelFrame(main, text="Дубли, отчёт, журнал", padding=8)
         other.grid(row=2, column=0, sticky="ew", pady=(0, 8))
@@ -324,6 +325,21 @@ class App:
             if plan and self.ask(f"Перенести файлы?\n\n{summary}\n\nВсё можно будет откатить."):
                 pipe.apply(plan)
         self.run_task("Сортировка", job)
+
+    def do_recategorize(self) -> None:
+        def job(cfg, db):
+            pipe = self.pipeline(cfg, db)
+            changed, plan = pipe.recategorize()
+            self.log(f"Категории пересчитаны по тегам из базы. Изменилась у артов: {changed}")
+            if not plan:
+                return
+            counts = Counter(m.category for m in plan)
+            summary = "\n".join(f"  → {cat}: {n}" for cat, n in counts.most_common())
+            self.log(f"Уже разложенных, которые поедут в другую папку: {len(plan)}\n{summary}")
+            if self.ask(f"Переложить {len(plan)} уже разложенных артов в новые папки?\n\n{summary}\n\n"
+                        "Это можно будет откатить."):
+                pipe.apply(plan)
+        self.run_task("Пересчёт категорий", job, need_source=False)
 
     def do_dupes(self, whole_library: bool) -> None:
         def job(cfg, db):

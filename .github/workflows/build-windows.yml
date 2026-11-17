@@ -71,6 +71,25 @@ jobs:
           choco install innosetup -y --no-progress
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" packaging\installer.iss
 
+      - name: Проверка установки и удаления
+        shell: pwsh
+        run: |
+          $setup = (Get-Item dist/Autosort-Setup-*.exe).FullName
+          Start-Process $setup -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART" -Wait
+          $id = "{6C3E2B7A-4E0B-4F6E-9C55-2B9E1A7D0A11}_is1"
+          $key = "HKCU:", "HKLM:" | ForEach-Object { Get-ItemProperty "$_\Software\Microsoft\Windows\CurrentVersion\Uninstall\$id" -ErrorAction SilentlyContinue } | Select-Object -First 1
+          if (-not $key) { throw "Установщик не зарегистрировал программу в «Установленных приложениях»" }
+          $dir = $key.InstallLocation.TrimEnd("\")
+          "Установлено в: $dir"
+          if (-not (Test-Path "$dir\Autosort.exe")) { throw "Нет Autosort.exe" }
+          $menus = [Environment]::GetFolderPath("Programs"), [Environment]::GetFolderPath("CommonPrograms")
+          if (-not ($menus | Where-Object { Test-Path "$_\Autosort\Удалить Autosort.lnk" })) { throw "Нет ярлыка «Удалить Autosort» в Пуске" }
+          Start-Process "$dir\unins000.exe" -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART" -Wait
+          for ($i = 0; $i -lt 60 -and (Test-Path "$dir\Autosort.exe"); $i++) { Start-Sleep 1 }
+          if (Test-Path "$dir\Autosort.exe") { throw "Программа не удалилась" }
+          if (-not (Test-Path "$env:LOCALAPPDATA\Autosort")) { throw "Тихое удаление стёрло данные пользователя" }
+          "Удаление работает, данные пользователя на месте"
+
       - uses: actions/upload-artifact@v4
         with:
           name: Autosort-${{ env.APP_VERSION }}

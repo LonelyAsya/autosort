@@ -119,6 +119,15 @@ class Database:
         with self.conn:
             self.conn.execute("UPDATE files SET status = ?, updated_at = ? WHERE id = ?", (status, now(), file_id))
 
+    def set_category(self, file_id: int, category: str, extra: list[str]) -> None:
+        """Главная категория и запасные (как теги kind='category')."""
+        with self.conn:
+            self.conn.execute("UPDATE files SET category = ?, updated_at = ? WHERE id = ?",
+                              (category, now(), file_id))
+            self.conn.execute("DELETE FROM tags WHERE file_id = ? AND kind = 'category'", (file_id,))
+            self.conn.executemany("INSERT INTO tags (file_id, kind, tag, score) VALUES (?, 'category', ?, 1.0)",
+                                  [(file_id, c) for c in extra])
+
     def tags_of(self, file_id: int) -> list[sqlite3.Row]:
         return self.conn.execute("SELECT kind, tag, score FROM tags WHERE file_id = ?", (file_id,)).fetchall()
 
