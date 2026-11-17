@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+build/
+dist/
+.pytest_cache/
+
+# личные настройки и рабочие файлы
+config.toml
+local/
+*.db
+*.db-journal
+.cache/
+plan.csv
+report.txt

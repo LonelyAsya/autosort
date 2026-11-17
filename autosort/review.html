@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Дубли — autosort</title>
+<style>
+  :root {
+    --bg: #f5f5f7; --card: #fff; --text: #1d1d1f; --muted: #6e6e73;
+    --line: #d2d2d7; --accent: #0071e3; --danger: #d70015; --keep: #248a3d;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #000; --card: #1c1c1e; --text: #f5f5f7; --muted: #98989d;
+            --line: #38383a; --accent: #0a84ff; --danger: #ff453a; --keep: #30d158; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.4 -apple-system, "Segoe UI", system-ui, sans-serif; }
+  header { position: sticky; top: 0; z-index: 1; background: var(--bg);
+           border-bottom: 1px solid var(--line); padding: 14px 16px;
+           display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  header h1 { font-size: 20px; margin: 0; flex: 1; }
+  #summary { color: var(--muted); width: 100%; order: 3; }
+  button { font: inherit; border: 1px solid var(--line); background: var(--card); color: var(--text);
+           border-radius: 8px; padding: 6px 12px; cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.danger { color: var(--danger); }
+  main { max-width: 1200px; margin: 0 auto; padding: 16px; display: grid; gap: 16px; }
+  .group { background: var(--card); border-radius: 14px; padding: 14px; border: 1px solid var(--line); }
+  .group-head { display: flex; justify-content: space-between; align-items: center; gap: 8px;
+                margin-bottom: 10px; color: var(--muted); flex-wrap: wrap; }
+  .items { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
+  .item { border: 2px solid transparent; border-radius: 10px; padding: 6px; }
+  .item.keep { border-color: var(--keep); }
+  .item img { width: 100%; aspect-ratio: 1; object-fit: contain; background: var(--bg);
+              border-radius: 6px; display: block; cursor: zoom-in; }
+  .badge { display: inline-block; font-size: 12px; color: #fff; background: var(--keep);
+           border-radius: 6px; padding: 1px 6px; margin: 6px 0 2px; }
+  .meta { font-size: 13px; color: var(--muted); word-break: break-all; }
+  .meta b { color: var(--text); font-weight: 600; }
+  .item button { width: 100%; margin-top: 6px; }
+  .empty { text-align: center; color: var(--muted); padding: 60px 0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Дубли</h1>
+  <button class="danger" id="all">Удалить лишнее во всех группах</button>
+  <button id="quit">Закончить</button>
+  <div id="summary"></div>
+</header>
+<main id="list"></main>
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+let groups = [];
+
+const fmtSize = b => b >= 1 << 30 ? (b / (1 << 30)).toFixed(2) + " ГБ"
+  : b >= 1 << 20 ? (b / (1 << 20)).toFixed(1) + " МБ" : Math.round(b / 1024) + " КБ";
+
+async function post(url, data) {
+  const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" },
+                               body: JSON.stringify(data || {}) });
+  return r.json();
+}
+
+function summary() {
+  const extra = groups.reduce((s, g) => s + g.items.filter(i => i.id !== g.keep)
+                                             .reduce((a, i) => a + (i.size || 0), 0), 0);
+  $("#summary").textContent = groups.length
+    ? `Групп: ${groups.length}. Если оставить подсказанные файлы, освободится ${fmtSize(extra)}. Удалённое уходит в корзину.`
+    : "";
+}
+
+function render() {
+  const list = $("#list");
+  list.innerHTML = "";
+  if (!groups.length) {
+    list.innerHTML = '<div class="empty">Дублей больше нет 🎉</div>';
+    $("#all").disabled = true;
+  }
+  for (const g of groups) {
+    const el = document.createElement("section");
+    el.className = "group";
+    el.innerHTML = `<div class="group-head"><span>${g.exact ? "Точные копии" : "Похожие"} · ${g.items.length} шт.</span></div>`;
+    const keepAll = document.createElement("button");
+    keepAll.textContent = "Оставить все";
+    keepAll.onclick = async () => { await post("/api/ignore", { key: g.key }); drop(g); };
+    el.firstChild.append(keepAll);
+    const items = document.createElement("div");
+    items.className = "items";
+    for (const it of g.items) {
+      const card = document.createElement("div");
+      card.className = "item" + (it.id === g.keep ? " keep" : "");
+      card.innerHTML = `
+        <img loading="lazy" src="/thumb/${it.id}" alt="">
+        ${it.id === g.keep ? '<span class="badge">Советуем оставить</span>' : ""}
+        <div class="meta"><b>${it.width || "?"}×${it.height || "?"}</b> · ${fmtSize(it.size || 0)} · ${esc(it.date.slice(0, 10))}</div>
+        <div class="meta" title="${esc(it.path)}">${esc(it.name)}</div>`;
+      card.querySelector("img").onclick = () => window.open(`/file/${it.id}`, "_blank");
+      const btn = document.createElement("button");
+      btn.textContent = "Оставить эту";
+      btn.onclick = async () => { await post("/api/resolve", { key: g.key, keep: [it.id] }); drop(g); };
+      card.append(btn);
+      items.append(card);
+    }
+    el.append(items);
+    list.append(el);
+  }
+  summary();
+}
+
+function drop(g) {
+  groups = groups.filter(x => x !== g);
+  render();
+}
+
+$("#all").onclick = async () => {
+  if (!confirm(`Во всех ${groups.length} группах оставить подсказанный файл, а остальные отправить в корзину?`)) return;
+  const r = await post("/api/resolve_all");
+  groups = [];
+  render();
+  alert(`В корзину отправлено файлов: ${r.trashed}`);
+};
+
+$("#quit").onclick = async () => {
+  await post("/api/quit");
+  document.body.innerHTML = '<div class="empty">Готово, окно можно закрыть.</div>';
+};
+
+fetch("/api/groups").then(r => r.json()).then(data => { groups = data; render(); });
+</script>
+</body>
+</html>
