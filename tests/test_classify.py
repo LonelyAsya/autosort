@@ -55,3 +55,11 @@ def test_authors_from_filename(cfg):
 def test_universe_of():
     assert universe_of("hatsune_miku") is None
     assert universe_of("saber_(fate)") == "fate"
+
+
+def test_category_by_character(cfg):
+    from autosort.analyze import match_categories
+    from autosort.config import Category
+
+    cfg.categories.insert(0, Category("Мику", {"hatsune_miku"}))
+    assert match_categories({"1girl": 0.9, "hatsune_miku": 0.95, "scenery": 0.5}, cfg) == ["Мику", "Пейзажи"]

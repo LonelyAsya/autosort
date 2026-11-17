@@ -45,6 +45,8 @@ class App:
             icon = resources.files("autosort").joinpath("data", "icon.png").read_bytes()
             self._icon = tk.PhotoImage(data=icon)
             root.iconphoto(True, self._icon)
+            if os.name == "nt":  # на Windows заголовок окна надёжнее берёт .ico
+                root.iconbitmap(default=str(resources.files("autosort").joinpath("data", "autosort.ico")))
         except Exception:
             pass
         self._build()
@@ -67,7 +69,7 @@ class App:
         self.source_var = tk.StringVar()
         self.target_var = tk.StringVar()
         for row, (label, var, key) in enumerate((
-            ("Откуда (папки по месяцам):", self.source_var, "source"),
+            ("Откуда:", self.source_var, "source"),
             ("Куда раскладывать:", self.target_var, "target"),
         )):
             ttk.Label(paths, text=label).grid(row=row, column=0, sticky="w", **pad)

@@ -38,9 +38,9 @@ class Analysis:
                     reason=self.reason, category=self.category, author=self.author, source=self.source)
 
 
-def match_categories(general: dict[str, float], cfg: Config) -> list[str]:
-    """Все подходящие категории в порядке приоритета."""
-    present = set(general)
+def match_categories(tags: dict[str, float], cfg: Config) -> list[str]:
+    """Все подходящие категории в порядке приоритета. tags — обычные теги и персонажи вместе."""
+    present = set(tags)
     return [c.name for c in cfg.categories if c.tags & present]
 
 
@@ -89,7 +89,7 @@ class Analyzer:
                 a.tags.append(("rating", top, result.rating[top]))
 
         if a.type == "art":
-            cats = match_categories(result.general if result else {}, cfg)
+            cats = match_categories({**result.general, **result.characters} if result else {}, cfg)
             a.category = cats[0] if cats else cfg.default_category
             a.tags += [("category", c, 1.0) for c in cats[1:]]
             a.author, a.source = authors.from_filename(path.name, cfg.author_patterns)
