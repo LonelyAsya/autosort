@@ -138,3 +138,40 @@ def test_no_tagger_sends_unknown_to_review(cfg, db):
     assert by_name["98765432_p0.png"].category == "Общее"
     assert by_name["landscape.png"].dst.parent == cfg.target / "На ручной разбор" / "2024-05"
     assert month.exists()
+
+
+def test_nested_year_month_folders(workspace, db):
+    """OneDrive/Изображения/Альбом камеры/2024/05/… → OneDrive/Изображения/Отсортированные/…/2024/05/…"""
+    from autosort.appdata import set_path_setting, set_setting
+    from autosort.config import load_config
+    from autosort.pipeline import folder_choices, media_folders
+
+    pictures = workspace / "OneDrive" / "Изображения"
+    album = pictures / "Альбом камеры"
+    for year, month, seed in (("2023", "12", 10), ("2024", "01", 11), ("2024", "05", 12)):
+        (album / year / month).mkdir(parents=True)
+        noise_image(seed).save(album / year / month / f"{seed}_p0_12345678_p0.png")
+    config = workspace / "config.toml"
+    set_path_setting(config, "source", str(album))
+    set_path_setting(config, "target", str(pictures / "Отсортированные с телефона"))
+    cfg = load_config(config)
+
+    assert folder_choices(media_folders(cfg)) == ["2023", "2023/12", "2024", "2024/01", "2024/05"]
+
+    pipe = Pipeline(cfg, db, tagger(), progress=False)
+    assert len(pipe.scan("2024")) == 2  # весь год
+    plan = pipe.scan()
+    pipe.apply(plan)
+    sorted_root = pictures / "Отсортированные с телефона" / "Арты" / "Общее"
+    assert sorted(p.relative_to(sorted_root).as_posix() for p in sorted_root.rglob("*.png")) == [
+        "2023/12/10_p0_12345678_p0.png", "2024/01/11_p0_12345678_p0.png", "2024/05/12_p0_12345678_p0.png"]
+
+    # без папок год/месяц — всё прямо в категории
+    assert pipe.undo() == 3
+    set_setting(config, "layout", "by_month", "false")
+    cfg = load_config(config)
+    assert cfg.by_month is False
+    pipe = Pipeline(cfg, db, tagger(), progress=False)
+    pipe.apply(pipe.scan())
+    assert sorted(p.name for p in sorted_root.iterdir()) == [
+        "10_p0_12345678_p0.png", "11_p0_12345678_p0.png", "12_p0_12345678_p0.png"]

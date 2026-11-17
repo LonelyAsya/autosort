@@ -44,20 +44,30 @@ def _toml_string(value: str) -> str:
     return '"' + value.replace("\\", "/").replace('"', '\\"') + '"'
 
 
-def set_path_setting(config: Path, key: str, value: str) -> None:
-    """Меняет source/target в секции [paths], не трогая остальной файл и комментарии."""
+def set_setting(config: Path, section: str, key: str, value: str) -> None:
+    """Меняет одну строку «key = value» в секции, не трогая остальной файл и комментарии.
+
+    value — уже готовое значение TOML (строка в кавычках, true/false, число).
+    """
     text = config.read_text(encoding="utf-8")
-    section = re.search(r"^\[paths\][^\[]*", text, re.MULTILINE)
-    line = f"{key} = {_toml_string(value)}"
-    if section is None:
-        text = f"[paths]\n{line}\n\n" + text
+    header = f"[{section}]"
+    found = re.search(rf"^{re.escape(header)}[ \t]*\n(?:(?!^\[).*\n?)*", text, re.MULTILINE)
+    line = f"{key} = {value}"
+    if found is None:
+        text = text.rstrip("\n") + f"\n\n{header}\n{line}\n"
     else:
-        body = section.group(0)
-        pattern = re.compile(rf"^{key}\s*=.*$", re.MULTILINE)
-        new_body = pattern.sub(lambda _: line, body, count=1) if pattern.search(body) else \
-            body.replace("[paths]\n", f"[paths]\n{line}\n", 1)
-        text = text[:section.start()] + new_body + text[section.end():]
+        body = found.group(0)
+        pattern = re.compile(rf"^{re.escape(key)}\s*=.*$", re.MULTILINE)
+        if pattern.search(body):
+            new_body = pattern.sub(lambda _: line, body, count=1)
+        else:
+            new_body = body.replace(header + "\n", f"{header}\n{line}\n", 1)
+        text = text[:found.start()] + new_body + text[found.end():]
     config.write_text(text, encoding="utf-8")
+
+
+def set_path_setting(config: Path, key: str, value: str) -> None:
+    set_setting(config, "paths", key, _toml_string(value))
 
 
 def open_path(path: Path) -> None:

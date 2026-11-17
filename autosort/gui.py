@@ -16,12 +16,12 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 from . import __version__
-from .appdata import data_dir, ensure_config, open_path, set_path_setting
+from .appdata import data_dir, ensure_config, open_path, set_path_setting, set_setting
 from .config import Config, load_config
 from .db import Database
-from .pipeline import LazyTagger, Pipeline, Stopped, write_plan_csv
+from .pipeline import LazyTagger, Pipeline, Stopped, folder_choices, media_folders, write_plan_csv
 
-ALL_MONTHS = "Все месяцы"
+ALL_MONTHS = "Все папки"
 
 
 class App:
@@ -73,13 +73,17 @@ class App:
 
         sort = ttk.LabelFrame(main, text="Сортировка", padding=8)
         sort.grid(row=1, column=0, sticky="ew", pady=(0, 8))
-        ttk.Label(sort, text="Месяц:").grid(row=0, column=0, sticky="w", **pad)
+        ttk.Label(sort, text="Год / месяц:").grid(row=0, column=0, sticky="w", **pad)
         self.month_var = tk.StringVar(value=ALL_MONTHS)
         self.month_box = ttk.Combobox(sort, textvariable=self.month_var, state="readonly", width=22)
         self.month_box.grid(row=0, column=1, sticky="w", **pad)
         self.full_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(sort, text="Перепроверить уже разобранные", variable=self.full_var).grid(
             row=0, column=2, columnspan=2, sticky="w", **pad)
+        self.by_month_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(sort, text="Внутри категорий сохранять папки год/месяц",
+                        variable=self.by_month_var, command=self.toggle_by_month).grid(
+            row=2, column=0, columnspan=4, sticky="w", **pad)
 
         self.buttons: list[ttk.Button] = []
 
@@ -191,9 +195,10 @@ class App:
         self.tagger = LazyTagger(self.cfg, self.log)
         self.source_var.set(str(self.cfg.source))
         self.target_var.set(str(self.cfg.target))
+        self.by_month_var.set(self.cfg.by_month)
         months = [ALL_MONTHS]
         if self.cfg.source.is_dir():
-            months += sorted(d.name for d in self.cfg.source.iterdir() if d.is_dir() and not d.name.startswith("."))
+            months += [m for m in folder_choices(media_folders(self.cfg)) if m]
         self.month_box.configure(values=months)
         if self.month_var.get() not in months:
             self.month_var.set(ALL_MONTHS)
@@ -207,6 +212,10 @@ class App:
         if folder:
             set_path_setting(self.config_path, key, folder)
             self.reload_config()
+
+    def toggle_by_month(self) -> None:
+        set_setting(self.config_path, "layout", "by_month", "true" if self.by_month_var.get() else "false")
+        self.reload_config()
 
     def open_folder(self, key: str) -> None:
         if self.cfg is None:

@@ -69,6 +69,30 @@ def walk_media(root: Path, exclude: list[Path]) -> Iterator[Path]:
                 yield p
 
 
+def media_folders(cfg: Config) -> list[tuple[str, Path]]:
+    """Все папки источника, где прямо внутри лежат файлы, с путём от источника.
+
+    Работает при любой вложенности: «Альбом камеры/2024/05/фото» даёт («2024/05», папка).
+    Файлы прямо в корне источника получают пустое имя.
+    """
+    src = cfg.source
+    skip = [cfg.target, cfg.cache_dir]
+    folders: dict[Path, None] = {}
+    for f in walk_media(src, skip):
+        folders.setdefault(f.parent, None)
+    return [(d.relative_to(src).as_posix() if d != src else "", d) for d in folders]
+
+
+def folder_choices(folders: list[tuple[str, Path]]) -> list[str]:
+    """Варианты для выбора: и годы целиком, и отдельные месяцы."""
+    choices: set[str] = set()
+    for name, _ in folders:
+        parts = name.split("/") if name else []
+        for i in range(1, len(parts) + 1):
+            choices.add("/".join(parts[:i]))
+    return sorted(choices)
+
+
 class Pipeline:
     def __init__(self, cfg: Config, db: Database, get_tagger: Callable[[], Tagger | None] | None = None,
                  log=print, progress: bool | Callable[[str, int, int], None] = True,
@@ -106,20 +130,15 @@ class Pipeline:
         return Hydration(self.cfg.onedrive_free_space, self.cfg.source, self.cfg.onedrive_reserve_bytes, self.log)
 
     def months(self, only: str | None = None) -> list[tuple[str, Path]]:
-        src = self.cfg.source
-        skip = {self.cfg.target.resolve(), self.cfg.cache_dir.resolve()}
-        result = [(d.name, d) for d in sorted(src.iterdir())
-                  if d.is_dir() and not d.name.startswith(".") and d.resolve() not in skip]
-        if any(is_media(f) for f in src.iterdir() if f.is_file()):
-            result.insert(0, ("", src))  # файлы прямо в корне источника
+        """Папки для обработки по одной. only — «2024» (весь год) или «2024/05»."""
+        result = media_folders(self.cfg)
         if only:
-            result = [m for m in result if m[0] == only]
+            only = only.strip("/")
+            result = [m for m in result if m[0] == only or m[0].startswith(only + "/")]
         return result
 
     def _files_of(self, name: str, folder: Path) -> list[Path]:
-        if name == "":
-            return sorted(f for f in folder.iterdir() if f.is_file() and is_media(f))
-        return list(walk_media(folder, [self.cfg.target, self.cfg.cache_dir]))
+        return sorted(f for f in folder.iterdir() if f.is_file() and is_media(f))
 
     # --- разбор ---
 
@@ -179,7 +198,7 @@ class Pipeline:
             if not month and row["mtime"]:
                 month = datetime.fromtimestamp(row["mtime"]).strftime("%Y-%m")
             if month:
-                parts.append(month)
+                parts.extend(month.split("/"))  # «2024/05» → подпапки 2024/05, как в источнике
         return self.cfg.target.joinpath(*parts, filename)
 
     # --- перенос и откат ---
