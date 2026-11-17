@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from PIL import Image
 
 from autosort.dupes import find_groups, trash_files
@@ -92,7 +94,7 @@ def test_duplicates(cfg, db):
     groups = find_groups(db, cfg.phash_distance)
     assert len(groups) == 1
     g = groups[0]
-    names = {db.get(i)["path"].rsplit("/", 1)[-1] for i in g.ids}
+    names = {Path(db.get(i)["path"]).name for i in g.ids}
     assert names == {"98765432_p0.png", "copy.png", "small.jpg"}
     assert db.get(g.keep)["width"] == 256  # большее разрешение
 
