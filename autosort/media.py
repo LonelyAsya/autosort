@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -23,6 +24,16 @@ VIDEO_EXT = {".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi", ".3gp"}
 
 # Чтобы на Windows не мигали чёрные окна ffmpeg.
 NO_WINDOW = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
+
+
+def find_tool(name: str) -> str | None:
+    """ffmpeg/ffprobe: сначала из комплекта программы (exe), потом из PATH."""
+    if getattr(sys, "frozen", False):
+        for base in (Path(getattr(sys, "_MEIPASS", "")), Path(sys.executable).parent):
+            for candidate in (base / "ffmpeg" / f"{name}.exe", base / f"{name}.exe"):
+                if candidate.exists():
+                    return str(candidate)
+    return shutil.which(name)
 
 
 def is_media(path: Path) -> bool:
@@ -77,7 +88,7 @@ def _probe_image(path: Path) -> MediaInfo:
 
 def _probe_video(path: Path) -> MediaInfo:
     info = MediaInfo("video")
-    ffprobe = shutil.which("ffprobe")
+    ffprobe = find_tool("ffprobe")
     if not ffprobe:
         return info
     out = subprocess.run(
@@ -133,7 +144,7 @@ def sample_frames(path: Path, info: MediaInfo, n: int) -> list[Image.Image]:
 
 
 def _video_frames(path: Path, duration: float | None, n: int) -> list[Image.Image]:
-    ffmpeg = shutil.which("ffmpeg")
+    ffmpeg = find_tool("ffmpeg")
     if not ffmpeg:
         return []
     times = [p * duration for p in _positions(n)] if duration else [0.0]

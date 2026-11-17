@@ -125,7 +125,7 @@ def load_config(path: str | Path) -> Config:
         meme_threshold=float(classify.get("meme_threshold", 0.6)),
         tagger_enabled=bool(tagger.get("enabled", True)),
         tagger_model=tagger.get("model", "SmilingWolf/wd-swinv2-tagger-v3"),
-        tagger_device=tagger.get("device", "cuda"),
+        tagger_device=tagger.get("device", "gpu"),
         general_threshold=float(tagger.get("general_threshold", 0.35)),
         character_threshold=float(tagger.get("character_threshold", 0.85)),
         video_frames=int(tagger.get("video_frames", 5)),

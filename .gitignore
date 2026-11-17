@@ -15,3 +15,6 @@ local/
 .cache/
 plan.csv
 report.txt
+build_ffmpeg/
+ffmpeg_dl/
+ffmpeg.zip

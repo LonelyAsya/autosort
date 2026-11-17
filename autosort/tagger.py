@@ -11,6 +11,11 @@ from PIL import Image
 from .media import flatten
 
 RATING, GENERAL, CHARACTER = 9, 0, 4
+PROVIDER_NAMES = {
+    "CUDAExecutionProvider": "видеокарта (CUDA)",
+    "DmlExecutionProvider": "видеокарта (DirectML)",
+    "CPUExecutionProvider": "процессор",
+}
 _CHARACTER_UNIVERSE = re.compile(r"^(.+)_\((.+)\)$")
 
 
@@ -44,10 +49,20 @@ class WD14Tagger:
 
         model_path = hf_hub_download(repo, "model.onnx")
         tags_path = hf_hub_download(repo, "selected_tags.csv")
-        providers = ["CPUExecutionProvider"]
-        if device == "cuda":
-            providers.insert(0, "CUDAExecutionProvider")
-        self.session = ort.InferenceSession(model_path, providers=providers)
+        # gpu: NVIDIA через CUDA, если он установлен, иначе любая видеокарта через DirectML (Windows)
+        preferred = {
+            "cpu": [],
+            "cuda": ["CUDAExecutionProvider"],
+            "directml": ["DmlExecutionProvider"],
+        }.get(device, ["CUDAExecutionProvider", "DmlExecutionProvider"])
+        available = ort.get_available_providers()
+        providers = [p for p in preferred if p in available] + ["CPUExecutionProvider"]
+        options = ort.SessionOptions()
+        if "DmlExecutionProvider" in providers:
+            options.enable_mem_pattern = False
+            options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+        self.session = ort.InferenceSession(model_path, options, providers=providers)
+        self.provider = PROVIDER_NAMES.get(self.session.get_providers()[0], self.session.get_providers()[0])
         inp = self.session.get_inputs()[0]
         self.input_name = inp.name
         self.size = inp.shape[1]

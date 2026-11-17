@@ -18,6 +18,10 @@ from .media import is_media
 from .onedrive import Hydration
 
 
+class Stopped(Exception):
+    """Пользователь нажал «Остановить». Всё сделанное до этого сохранено."""
+
+
 @dataclass
 class PlannedMove:
     file_id: int
@@ -43,9 +47,10 @@ class LazyTagger:
             try:
                 from .tagger import WD14Tagger
 
-                self.log(f"Загружаю тегер {self.cfg.tagger_model}…")
+                self.log(f"Загружаю тегер {self.cfg.tagger_model} (в первый раз скачивается ~450 МБ)…")
                 self._tagger = WD14Tagger(self.cfg.tagger_model, self.cfg.tagger_device,
                                           self.cfg.general_threshold, self.cfg.character_threshold)
+                self.log(f"Тегер работает на: {self._tagger.provider}")
             except Exception as e:
                 self.log(f"Тегер недоступен ({e}). Файлы без явных признаков уйдут на ручной разбор.")
                 self._failed = True
@@ -66,17 +71,36 @@ def walk_media(root: Path, exclude: list[Path]) -> Iterator[Path]:
 
 class Pipeline:
     def __init__(self, cfg: Config, db: Database, get_tagger: Callable[[], Tagger | None] | None = None,
-                 log=print, progress: bool = True):
+                 log=print, progress: bool | Callable[[str, int, int], None] = True,
+                 should_stop: Callable[[], bool] | None = None):
         self.cfg = cfg
         self.db = db
         self.log = log
+        # True — полоска в консоли, функция (подпись, сделано, всего) — для окна программы
         self.progress = progress
+        self.should_stop = should_stop
         sauce = None
         if cfg.saucenao_enabled and cfg.saucenao_api_key:
             from .authors import SauceNao
 
             sauce = SauceNao(cfg.saucenao_api_key, cfg.saucenao_min_similarity, cfg.saucenao_delay)
         self.analyzer = Analyzer(cfg, get_tagger or LazyTagger(cfg, log), sauce)
+
+    def _iter(self, items: list, label: str) -> Iterator:
+        report = self.progress if callable(self.progress) else None
+        bar = None if report else tqdm(total=len(items), desc=label, unit="файл", disable=not self.progress)
+        for i, item in enumerate(items):
+            if self.should_stop and self.should_stop():
+                raise Stopped
+            if report:
+                report(label, i, len(items))
+            yield item
+            if bar:
+                bar.update()
+        if report:
+            report(label, len(items), len(items))
+        if bar:
+            bar.close()
 
     def _hydration(self) -> Hydration:
         return Hydration(self.cfg.onedrive_free_space, self.cfg.source, self.cfg.onedrive_reserve_bytes, self.log)
@@ -106,16 +130,17 @@ class Pipeline:
         for name, folder in self.months(month):
             files = self._files_of(name, folder)
             hydration = self._hydration()
-            label = name or "(корень)"
-            for path in tqdm(files, desc=label, unit="файл", disable=not self.progress):
-                file_id = self._scan_file(path, name, full, hydration)
-                if file_id is None:
-                    continue
-                row = self.db.get(file_id)
-                dst = unique_path(self.target_for(row, path.name), reserved)
-                reserved.add(dst)
-                plan.append(PlannedMove(file_id, path, dst, row["type"], row["category"]))
-            hydration.release()
+            try:
+                for path in self._iter(files, name or "(корень)"):
+                    file_id = self._scan_file(path, name, full, hydration)
+                    if file_id is None:
+                        continue
+                    row = self.db.get(file_id)
+                    dst = unique_path(self.target_for(row, path.name), reserved)
+                    reserved.add(dst)
+                    plan.append(PlannedMove(file_id, path, dst, row["type"], row["category"]))
+            finally:
+                hydration.release()
         return plan
 
     def _scan_file(self, path: Path, month: str, full: bool, hydration: Hydration) -> int | None:
@@ -163,7 +188,7 @@ class Pipeline:
         """Переносит файлы по плану. Каждое действие сначала пишется в журнал."""
         batch = self.db.new_batch()
         done = 0
-        for m in tqdm(plan, desc="Перенос", unit="файл", disable=not self.progress):
+        for m in self._iter(plan, "Перенос"):
             if not m.src.exists():
                 continue
             dst = unique_path(m.dst, set()) if m.dst.exists() else m.dst
@@ -214,26 +239,31 @@ class Pipeline:
             files += walk_media(r, other + [self.cfg.cache_dir])
         hydration = self._hydration()
         count = 0
-        for path in tqdm(files, desc="Отпечатки", unit="файл", disable=not self.progress):
-            st = path.stat()
-            row = self.db.get_by_path(path)
-            if row is not None and row["sha256"] and row["size"] == st.st_size and row["mtime"] == st.st_mtime:
-                continue
-            try:
-                downloaded = hydration.before_read(path, st.st_size)
-                info, sha, phash, _ = hash_media(path, self.cfg)
-            except Exception as e:
-                self.log(f"Ошибка: {path.name}: {e}")
-                continue
-            status = row["status"] if row is not None and row["status"] != "error" else "hashed"
-            file_id = self.db.save_file(path, size=st.st_size, mtime=st.st_mtime, kind=info.kind,
-                                        width=info.width, height=info.height, duration=info.duration,
-                                        taken_at=info.taken_at, sha256=sha, phash=phash, status=status)
-            if downloaded:
-                hydration.track(file_id, path)
-            count += 1
-        hydration.release()
+        try:
+            for path in self._iter(files, "Отпечатки"):
+                count += self._hash_file(path, hydration)
+        finally:
+            hydration.release()
         return count
+
+    def _hash_file(self, path: Path, hydration: Hydration) -> int:
+        st = path.stat()
+        row = self.db.get_by_path(path)
+        if row is not None and row["sha256"] and row["size"] == st.st_size and row["mtime"] == st.st_mtime:
+            return 0
+        try:
+            downloaded = hydration.before_read(path, st.st_size)
+            info, sha, phash, _ = hash_media(path, self.cfg)
+        except Exception as e:
+            self.log(f"Ошибка: {path.name}: {e}")
+            return 0
+        status = row["status"] if row is not None and row["status"] != "error" else "hashed"
+        file_id = self.db.save_file(path, size=st.st_size, mtime=st.st_mtime, kind=info.kind,
+                                    width=info.width, height=info.height, duration=info.duration,
+                                    taken_at=info.taken_at, sha256=sha, phash=phash, status=status)
+        if downloaded:
+            hydration.track(file_id, path)
+        return 1
 
 
 def unique_path(path: Path, reserved: set[Path]) -> Path:

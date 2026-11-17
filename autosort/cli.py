@@ -16,7 +16,9 @@ def find_config(arg: str | None) -> Path:
     for candidate in (Path("local/config.toml"), Path("config.toml")):
         if candidate.exists():
             return candidate
-    sys.exit("Не найден config.toml. Скопируйте config.example.toml в config.toml и впишите свои пути.")
+    from .appdata import data_dir, ensure_config
+
+    return ensure_config(data_dir())
 
 
 def print_plan_summary(plan, cfg) -> None:

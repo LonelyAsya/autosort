@@ -1,4 +1,4 @@
-# Настройки autosort. Скопируйте этот файл в config.toml и поправьте пути.
+# Настройки autosort. Папки «откуда» и «куда» удобнее выбрать в окне программы.
 # Относительные пути считаются от папки, где лежит этот файл.
 
 [paths]
@@ -40,7 +40,7 @@ meme_threshold = 0.6
 enabled = true
 # Локальная модель WD14 (скачивается один раз с Hugging Face, дальше работает офлайн).
 model = "SmilingWolf/wd-swinv2-tagger-v3"
-device = "cuda"            # "cuda" для видеокарты NVIDIA, "cpu" — без неё
+device = "gpu"             # "gpu" — видеокарта (CUDA или DirectML), "cpu" — без неё
 general_threshold = 0.35   # минимальная уверенность для обычных тегов
 character_threshold = 0.85 # минимальная уверенность для персонажей
 video_frames = 5           # сколько кадров брать из видео и GIF

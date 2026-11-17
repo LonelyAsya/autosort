@@ -117,14 +117,31 @@ def make_handler(state: ReviewState):
     return Handler
 
 
-def serve(cfg: Config, db: Database, port: int = 8765, open_browser: bool = True, log=print) -> None:
+def create_server(cfg: Config, db: Database, port: int = 8765, log=print) -> tuple[HTTPServer, str] | None:
+    """Готовит сервер окна дублей. None — дублей нет. Если порт занят, берёт следующий."""
     state = ReviewState(cfg, db, log)
     if not state.groups:
         log("Дублей не найдено.")
+        return None
+    for p in range(port, port + 20):
+        try:
+            server = HTTPServer(("127.0.0.1", p), make_handler(state))
+            break
+        except OSError:
+            continue
+    else:
+        raise OSError(f"Порты {port}–{port + 19} заняты")
+    url = f"http://127.0.0.1:{server.server_port}/"
+    log(f"Групп дублей: {len(state.groups)}. Окно разбора: {url}")
+    return server, url
+
+
+def serve(cfg: Config, db: Database, port: int = 8765, open_browser: bool = True, log=print) -> None:
+    created = create_server(cfg, db, port, log)
+    if created is None:
         return
-    server = HTTPServer(("127.0.0.1", port), make_handler(state))
-    url = f"http://127.0.0.1:{port}/"
-    log(f"Групп дублей: {len(state.groups)}. Окно разбора: {url} (Ctrl+C — выход)")
+    server, url = created
+    log("Ctrl+C — выход")
     if open_browser:
         webbrowser.open(url)
     try:
