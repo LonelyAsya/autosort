@@ -39,7 +39,7 @@ class Analysis:
 
 
 def match_categories(tags: dict[str, float], cfg: Config) -> list[str]:
-    """Все подходящие категории в порядке приоритета. tags — обычные теги и персонажи вместе."""
+    """Все подходящие категории в порядке приоритета. tags — обычные теги, персонажи и вселенные вместе."""
     present = set(tags)
     return [c.name for c in cfg.categories if c.tags & present]
 
@@ -76,10 +76,10 @@ class Analyzer:
                         else Decision("review", "нет признаков, а тегер недоступен"))
 
         a = Analysis(info, sha, phash, decision.type, decision.reason)
+        universes: dict[str, float] = {}
         if result:
             a.tags += [("general", t, s) for t, s in result.general.items()]
             a.tags += [("character", t, s) for t, s in result.characters.items()]
-            universes: dict[str, float] = {}
             for char, score in result.characters.items():
                 if u := universe_of(char):
                     universes[u] = max(score, universes.get(u, 0.0))
@@ -89,7 +89,8 @@ class Analyzer:
                 a.tags.append(("rating", top, result.rating[top]))
 
         if a.type == "art":
-            cats = match_categories({**result.general, **result.characters} if result else {}, cfg)
+            found = {**result.general, **result.characters, **universes} if result else {}
+            cats = match_categories(found, cfg)
             a.category = cats[0] if cats else cfg.default_category
             a.tags += [("category", c, 1.0) for c in cats[1:]]
             a.author, a.source = authors.from_filename(path.name, cfg.author_patterns)

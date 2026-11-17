@@ -177,3 +177,13 @@ def test_nested_year_month_folders(workspace, db):
     pipe.apply(pipe.scan())
     assert sorted(p.name for p in sorted_root.iterdir()) == [
         "10_p0_12345678_p0.png", "11_p0_12345678_p0.png", "12_p0_12345678_p0.png"]
+
+
+def test_category_by_universe(cfg, db):
+    from autosort.config import Category
+
+    cfg.categories.insert(0, Category("Fate", {"fate"}))
+    make_library(cfg)
+    plan = Pipeline(cfg, db, tagger(), progress=False).scan()
+    land = next(m for m in plan if m.src.name == "landscape.png")  # на нём saber_(fate)
+    assert land.category == "Fate"
