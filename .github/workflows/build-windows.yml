@@ -43,6 +43,17 @@ jobs:
           $v = if ("${{ github.ref_type }}" -eq "tag") { "${{ github.ref_name }}".TrimStart("v") } else { "dev-${{ github.run_number }}" }
           "APP_VERSION=$v" >> $env:GITHUB_ENV
 
+      - name: Проверка номера версии и патчноут
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        run: |
+          if ("$env:APP_VERSION" -notmatch '^\d+\.\d+\.\d+$') { throw "Тег должен быть vX.Y.Z, а не v$env:APP_VERSION" }
+          $code = python -c "import autosort; print(autosort.__version__)"
+          if ($code -ne $env:APP_VERSION) { throw "Тег v$env:APP_VERSION, а в autosort/__init__.py версия $code" }
+          if (-not (Select-String -Path pyproject.toml -SimpleMatch "version = `"$env:APP_VERSION`"")) { throw "В pyproject.toml другая версия" }
+          python packaging/release_notes.py $env:APP_VERSION > dist/notes.md
+          if ($LASTEXITCODE) { throw "Нет раздела [$env:APP_VERSION] в CHANGELOG.md" }
+
       - name: Portable-архив
         shell: pwsh
         run: Compress-Archive dist/Autosort "dist/Autosort-portable-$env:APP_VERSION.zip"
@@ -101,6 +112,8 @@ jobs:
         if: github.ref_type == 'tag'
         uses: softprops/action-gh-release@v2
         with:
+          name: Autosort ${{ env.APP_VERSION }}
+          body_path: dist/notes.md
           files: |
             dist/Autosort-Setup-*.exe
             dist/Autosort-portable-*.zip

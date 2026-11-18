@@ -190,4 +190,14 @@ pytest
 `pyinstaller packaging/autosort.spec`. Иконка генерируется скриптом `packaging/make_icon.py`.
 В сборку входит ffmpeg (LGPL) от [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds).
 
+### Версии и выпуск
+
+Версии в формате **X.Y.Z**: X — крупный релиз, Y — новые возможности, Z — исправления ошибок.
+Что изменилось, описано в [CHANGELOG.md](CHANGELOG.md). Чтобы выпустить версию:
+
+1. Поднять номер в `pyproject.toml` и `autosort/__init__.py`.
+2. Добавить раздел `## [X.Y.Z] — дата` в `CHANGELOG.md`.
+3. Закоммитить и запушить тег `vX.Y.Z`. CI проверит, что номера совпадают, соберёт установщик
+   и опубликует релиз с патчноутом из `CHANGELOG.md`.
+
 Лицензия: MIT.

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "autosort"
-version = "0.2.6"
+version = "1.3.2"
 description = "Локальная автосортировка медиатеки: камера / арты / мемы / скриншоты, теги, поиск дублей"
 readme = "README.md"
 requires-python = ">=3.11"
