@@ -245,9 +245,44 @@ def test_flaky_onedrive_file_is_retried(cfg, db):
     assert "small.jpg" in {m.src.name for m in pipe.scan()}
 
 
+def test_onedrive_down_stops_everything(cfg, db, monkeypatch):
+    import autosort.pipeline as pipeline_mod
+    from autosort.onedrive import CloudUnavailable
+
+    make_library(cfg)
+    pipe = Pipeline(cfg, db, tagger(), progress=False)
+    calls = []
+
+    def broken(path):
+        calls.append(path.name)
+        raise OSError(22, "Invalid argument")
+
+    def diagnose(path, error):
+        raise CloudUnavailable("OneDrive не отдаёт файлы")
+
+    pipe.analyzer.analyze = broken
+    monkeypatch.setattr(pipeline_mod, "explain_read_error", diagnose)
+    with pytest.raises(CloudUnavailable):
+        pipe.scan()
+    assert len(calls) == 1  # без повторов и без перебора остальных файлов
+    assert db.conn.execute("SELECT COUNT(*) FROM files WHERE status = 'error'").fetchone()[0] == 0
+
+
 def test_truncated_jpeg_is_readable(cfg, db):
     month = make_library(cfg)
     data = (month / "small.jpg").read_bytes()
     (month / "small.jpg").write_bytes(data[:-200])
     plan = Pipeline(cfg, db, tagger(), progress=False).scan()
     assert "small.jpg" in {m.src.name for m in plan}
+
+
+@pytest.mark.skipif(__import__("sys").platform != "win32", reason="только Windows")
+def test_windows_read_error(tmp_path):
+    from autosort.onedrive import explain_read_error, windows_read_error
+
+    ok = tmp_path / "ок.txt"
+    ok.write_text("x")
+    assert windows_read_error(ok) is None
+    code, text = windows_read_error(tmp_path / "нет.txt")
+    assert code == 2 and text
+    assert "код Windows 2" in explain_read_error(tmp_path / "нет.txt", OSError(22, "Invalid argument"))

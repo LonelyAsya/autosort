@@ -27,6 +27,69 @@ def is_cloud_only(path: Path) -> bool:
         return False
 
 
+# Ошибки Windows, при которых OneDrive не отдаст ни один файл, пока его не починить.
+# Python показывает их как «[Errno 22] Invalid argument», настоящий код теряется.
+_PROVIDER_DOWN = {
+    362,  # ERROR_CLOUD_FILE_PROVIDER_NOT_RUNNING — «Поставщик облачного файла не работает»
+    404,  # ERROR_CLOUD_FILE_PROVIDER_TERMINATED
+}
+
+
+class CloudUnavailable(Exception):
+    """OneDrive не отдаёт файлы — дальше обрабатывать бессмысленно."""
+
+
+def windows_read_error(path: Path) -> tuple[int, str] | None:
+    """Пробует прочитать первый байт средствами Windows и возвращает (код, текст) ошибки.
+
+    Нужно, потому что open() в Python сводит облачные ошибки к Errno 22."""
+    if sys.platform != "win32":
+        return None
+    import ctypes
+    from ctypes import wintypes
+
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.CreateFileW.restype = wintypes.HANDLE
+    k32.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
+                                wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+    k32.ReadFile.argtypes = [wintypes.HANDLE, wintypes.LPVOID, wintypes.DWORD,
+                             ctypes.POINTER(wintypes.DWORD), wintypes.LPVOID]
+    k32.CloseHandle.argtypes = [wintypes.HANDLE]
+    handle = k32.CreateFileW(str(path), 0x80000000, 0x7, None, 3, 0, None)  # GENERIC_READ, OPEN_EXISTING
+    if handle in (None, wintypes.HANDLE(-1).value):
+        code = ctypes.get_last_error()
+    else:
+        buf = ctypes.create_string_buffer(1)
+        read = wintypes.DWORD()
+        ok = k32.ReadFile(handle, buf, 1, ctypes.byref(read), None)
+        code = 0 if ok else ctypes.get_last_error()
+        k32.CloseHandle(handle)
+    if not code:
+        return None
+    return code, ctypes.FormatError(code).strip()
+
+
+def explain_read_error(path: Path, error: Exception) -> str:
+    """Текст ошибки с настоящей причиной от Windows; бросает CloudUnavailable, если OneDrive не работает."""
+    if not isinstance(error, OSError) or getattr(error, "winerror", None):
+        return str(error)
+    try:
+        real = windows_read_error(path)
+    except Exception:  # диагностика не должна сама ронять разбор
+        real = None
+    if real is None:
+        return str(error)
+    code, text = real
+    if code in _PROVIDER_DOWN:
+        raise CloudUnavailable(
+            f"OneDrive не отдаёт файлы: «{text}» (код {code}). Обработка остановлена, файлы не тронуты.\n"
+            "Что сделать: щёлкните значок OneDrive в трее — если синхронизация на паузе, возобновите её. "
+            "Если не поможет, перезапустите OneDrive (значок → шестерёнка → «Закрыть OneDrive», "
+            "затем откройте OneDrive из меню «Пуск»). Проверьте, что файл открывается в проводнике, "
+            "и запустите разбор снова — уже разобранное пропустится.")
+    return f"{text} (код Windows {code})"
+
+
 def free_up(path: Path) -> None:
     if sys.platform != "win32":
         return

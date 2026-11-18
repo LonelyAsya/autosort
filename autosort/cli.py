@@ -8,6 +8,7 @@ from pathlib import Path
 
 from .config import load_config
 from .db import Database
+from .onedrive import CloudUnavailable
 
 
 def find_config(arg: str | None) -> Path:
@@ -32,6 +33,14 @@ def print_plan_summary(plan, cfg) -> None:
 
 
 def main(argv: list[str] | None = None) -> None:
+    try:
+        _main(argv)
+    except CloudUnavailable as e:
+        print(e, file=sys.stderr)
+        sys.exit(2)
+
+
+def _main(argv: list[str] | None = None) -> None:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(prog="autosort", description="Автосортировка медиатеки")

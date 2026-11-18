@@ -20,6 +20,7 @@ from . import __version__
 from .appdata import data_dir, ensure_config, open_path, set_path_setting, set_setting
 from .config import Config, load_config
 from .db import Database
+from .onedrive import CloudUnavailable
 from .pipeline import LazyTagger, Pipeline, Stopped, folder_choices, media_folders, write_plan_csv
 
 ALL_MONTHS = "Все папки"
@@ -178,6 +179,8 @@ class App:
                     _, question, answer = event
                     answer["value"] = messagebox.askyesno("Autosort", question, parent=self.root)
                     answer["event"].set()
+                elif kind == "warn":
+                    messagebox.showwarning("Autosort", event[1], parent=self.root)
                 elif kind == "done":
                     self._set_busy(False)
                 elif kind == "open":
@@ -278,6 +281,9 @@ class App:
                 job(cfg, db)
             except Stopped:
                 self.log("Остановлено. Всё, что успели сделать, сохранено.")
+            except CloudUnavailable as e:
+                self.log(str(e))
+                self.events.put(("warn", str(e)))
             except Exception as e:
                 self.log(f"Ошибка: {e}")
                 self.log(traceback.format_exc())

@@ -17,7 +17,7 @@ from .analyze import Analyzer, Tagger, hash_media, match_categories
 from .config import Config
 from .db import Database
 from .media import is_media
-from .onedrive import Hydration
+from .onedrive import CloudUnavailable, Hydration, explain_read_error
 
 
 class Stopped(Exception):
@@ -180,7 +180,7 @@ class Pipeline:
         downloaded = hydration.before_read(path, st.st_size)
         try:
             a = self._with_retries(path, lambda: self.analyzer.analyze(path))
-        except Stopped:
+        except (Stopped, CloudUnavailable):
             raise
         except Exception as e:
             self.errors += 1
@@ -209,9 +209,10 @@ class Pipeline:
             try:
                 return action()
             except (OSError, subprocess.TimeoutExpired) as e:
+                reason = explain_read_error(path, e)  # CloudUnavailable останавливает всю обработку
                 if delay is None:
-                    raise
-                self.log(f"{path.name}: {e} — повтор через {delay:g} с")
+                    raise OSError(reason) from e
+                self.log(f"{path.name}: {reason} — повтор через {delay:g} с")
                 end = time.monotonic() + delay
                 while time.monotonic() < end:
                     if self.should_stop and self.should_stop():
@@ -336,7 +337,7 @@ class Pipeline:
         downloaded = hydration.before_read(path, st.st_size)
         try:
             info, sha, phash, _ = self._with_retries(path, lambda: hash_media(path, self.cfg))
-        except Stopped:
+        except (Stopped, CloudUnavailable):
             raise
         except Exception as e:
             self.errors += 1
