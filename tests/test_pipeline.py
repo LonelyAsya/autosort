@@ -216,3 +216,38 @@ def test_recategorize_without_tagger(cfg, db):
     assert pipe.undo() == 1
     assert old.exists()
     assert db.get(row["id"])["status"] == "moved"
+
+
+def test_flaky_onedrive_file_is_retried(cfg, db):
+    make_library(cfg)
+    pipe = Pipeline(cfg, db, tagger(), progress=False)
+    pipe.retry_delays = (0, 0)
+    real = pipe.analyzer.analyze
+    failures = {"copy.png": 2, "small.jpg": 5}
+
+    def flaky(path):
+        if failures.get(path.name, 0) > 0:
+            failures[path.name] -= 1
+            raise OSError(22, "Invalid argument")
+        return real(path)
+
+    pipe.analyzer.analyze = flaky
+    plan = pipe.scan()
+    names = {m.src.name for m in plan}
+    assert "copy.png" in names  # третья попытка удалась
+    assert "small.jpg" not in names  # три неудачи — ошибка, файл не тронут
+    assert pipe.errors == 1
+    assert db.get_by_path(cfg.source / "2024-05" / "small.jpg")["status"] == "error"
+
+    # при следующем запуске файл с ошибкой пробуется снова
+    failures.clear()
+    pipe.errors = 0
+    assert "small.jpg" in {m.src.name for m in pipe.scan()}
+
+
+def test_truncated_jpeg_is_readable(cfg, db):
+    month = make_library(cfg)
+    data = (month / "small.jpg").read_bytes()
+    (month / "small.jpg").write_bytes(data[:-200])
+    plan = Pipeline(cfg, db, tagger(), progress=False).scan()
+    assert "small.jpg" in {m.src.name for m in plan}

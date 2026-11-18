@@ -10,7 +10,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from PIL import Image
+from PIL import Image, ImageFile
 
 try:
     from pillow_heif import register_heif_opener
@@ -18,6 +18,9 @@ try:
     register_heif_opener()
 except ImportError:  # HEIC просто не будет читаться
     pass
+
+# Фото с iPhone иногда обрезаны на пару байт в конце — картинка при этом нормальная.
+ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 IMAGE_EXT = {".jpg", ".jpeg", ".jfif", ".png", ".webp", ".bmp", ".tif", ".tiff", ".heic", ".heif", ".gif"}
 VIDEO_EXT = {".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi", ".3gp"}
@@ -93,7 +96,7 @@ def _probe_video(path: Path) -> MediaInfo:
         return info
     out = subprocess.run(
         [ffprobe, "-v", "error", "-print_format", "json", "-show_format", "-show_streams", str(path)],
-        capture_output=True, timeout=120, **NO_WINDOW,
+        capture_output=True, timeout=600, **NO_WINDOW,
     )
     data = json.loads(out.stdout or b"{}")
     for stream in data.get("streams", []):
@@ -153,7 +156,7 @@ def _video_frames(path: Path, duration: float | None, n: int) -> list[Image.Imag
         out = subprocess.run(
             [ffmpeg, "-v", "error", "-ss", f"{t:.2f}", "-i", str(path),
              "-frames:v", "1", "-f", "image2pipe", "-vcodec", "png", "-"],
-            capture_output=True, timeout=120, **NO_WINDOW,
+            capture_output=True, timeout=600, **NO_WINDOW,
         )
         if out.stdout:
             frames.append(flatten(Image.open(io.BytesIO(out.stdout))))

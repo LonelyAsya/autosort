@@ -4,6 +4,8 @@ from __future__ import annotations
 import csv
 import os
 import shutil
+import subprocess
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -103,6 +105,10 @@ class Pipeline:
         # True — полоска в консоли, функция (подпись, сделано, всего) — для окна программы
         self.progress = progress
         self.should_stop = should_stop
+        # Паузы перед повторами: OneDrive иногда не отдаёт файл с первого раза
+        # (Errno 22, недокачанный файл), особенно пока освобождает место.
+        self.retry_delays: tuple[float, ...] = (5, 30)
+        self.errors = 0
         sauce = None
         if cfg.saucenao_enabled and cfg.saucenao_api_key:
             from .authors import SauceNao
@@ -160,6 +166,9 @@ class Pipeline:
                     plan.append(PlannedMove(file_id, path, dst, row["type"], row["category"]))
             finally:
                 hydration.release()
+        if self.errors:
+            self.log(f"Не удалось разобрать файлов: {self.errors}. Они останутся на месте; "
+                     "при следующем запуске программа попробует их снова.")
         return plan
 
     def _scan_file(self, path: Path, month: str, full: bool, hydration: Hydration) -> int | None:
@@ -168,12 +177,18 @@ class Pipeline:
         if (row is not None and not full and row["status"] == "analyzed"
                 and row["size"] == st.st_size and row["mtime"] == st.st_mtime):
             return row["id"]
+        downloaded = hydration.before_read(path, st.st_size)
         try:
-            downloaded = hydration.before_read(path, st.st_size)
-            a = self.analyzer.analyze(path)
+            a = self._with_retries(path, lambda: self.analyzer.analyze(path))
+        except Stopped:
+            raise
         except Exception as e:
+            self.errors += 1
             self.log(f"Ошибка: {path.name}: {e}")
-            self.db.save_file(path, month=month, size=st.st_size, mtime=st.st_mtime, status="error", error=str(e))
+            file_id = self.db.save_file(path, month=month, size=st.st_size, mtime=st.st_mtime,
+                                        status="error", error=str(e))
+            if downloaded:  # мог скачаться частично — всё равно освобождаем место
+                hydration.track(file_id, path)
             return None
         if a.type == "review":
             # Точная копия уже разобранного файла едет туда же, куда оригинал.
@@ -188,6 +203,20 @@ class Pipeline:
         if downloaded:
             hydration.track(file_id, path)
         return file_id
+
+    def _with_retries(self, path: Path, action):
+        for delay in (*self.retry_delays, None):
+            try:
+                return action()
+            except (OSError, subprocess.TimeoutExpired) as e:
+                if delay is None:
+                    raise
+                self.log(f"{path.name}: {e} — повтор через {delay:g} с")
+                end = time.monotonic() + delay
+                while time.monotonic() < end:
+                    if self.should_stop and self.should_stop():
+                        raise Stopped
+                    time.sleep(min(0.5, delay))
 
     def target_for(self, row, filename: str) -> Path:
         parts = [self.cfg.folders[row["type"]]]
@@ -304,10 +333,13 @@ class Pipeline:
         row = self.db.get_by_path(path)
         if row is not None and row["sha256"] and row["size"] == st.st_size and row["mtime"] == st.st_mtime:
             return 0
+        downloaded = hydration.before_read(path, st.st_size)
         try:
-            downloaded = hydration.before_read(path, st.st_size)
-            info, sha, phash, _ = hash_media(path, self.cfg)
+            info, sha, phash, _ = self._with_retries(path, lambda: hash_media(path, self.cfg))
+        except Stopped:
+            raise
         except Exception as e:
+            self.errors += 1
             self.log(f"Ошибка: {path.name}: {e}")
             return 0
         status = row["status"] if row is not None and row["status"] != "error" else "hashed"

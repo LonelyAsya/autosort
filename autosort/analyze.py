@@ -46,8 +46,10 @@ def match_categories(tags: dict[str, float], cfg: Config) -> list[str]:
 
 def hash_media(path: Path, cfg: Config) -> tuple[MediaInfo, str, str | None, list[Image.Image]]:
     """Метаданные, sha256, отпечатки кадров; заодно сохраняет миниатюру."""
-    info = probe(path)
+    # sha256 читает файл целиком — для OneDrive это и есть скачивание. Делаем его первым,
+    # чтобы ffprobe и Pillow дальше работали с уже скачанным файлом, а не ждали облако.
     sha = sha256_file(path)
+    info = probe(path)
     frames = sample_frames(path, info, cfg.video_frames)
     phash = ",".join(phash_hex(f) for f in frames) or None
     if frames:
