@@ -149,7 +149,9 @@ class App:
     # --- связь с фоновой задачей (tkinter можно трогать только из главного потока) ---
 
     def log(self, text: str) -> None:
-        self.events.put(("log", text))
+        # Время в журнале и копия в autosort.log: по ним видно, что происходило, когда закрылся OneDrive.
+        print(f"{datetime.now():%Y-%m-%d %H:%M:%S} {text}", flush=True)
+        self.events.put(("log", f"{datetime.now():%H:%M:%S}  {text}"))
 
     def report_progress(self, label: str, done: int, total: int) -> None:
         self.events.put(("progress", label, done, total))

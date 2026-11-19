@@ -261,11 +261,45 @@ def test_onedrive_down_stops_everything(cfg, db, monkeypatch):
         raise CloudUnavailable("OneDrive не отдаёт файлы")
 
     pipe.analyzer.analyze = broken
+    pipe.max_revivals = 0  # перезапуск OneDrive не помог
     monkeypatch.setattr(pipeline_mod, "explain_read_error", diagnose)
     with pytest.raises(CloudUnavailable):
         pipe.scan()
     assert len(calls) == 1  # без повторов и без перебора остальных файлов
     assert db.conn.execute("SELECT COUNT(*) FROM files WHERE status = 'error'").fetchone()[0] == 0
+
+
+def test_closed_onedrive_is_restarted(cfg, db, monkeypatch):
+    import autosort.pipeline as pipeline_mod
+    from autosort.onedrive import CloudUnavailable
+
+    make_library(cfg)
+    pipe = Pipeline(cfg, db, tagger(), progress=False)
+    pipe._sleep = lambda seconds: None
+    real = pipe.analyzer.analyze
+    state = {"running": False, "started": 0, "fail": True}
+
+    def flaky(path):
+        if state["fail"] and path.name == "small.jpg":
+            raise OSError(22, "Invalid argument")
+        return real(path)
+
+    def diagnose(path, error):
+        raise CloudUnavailable("OneDrive не отдаёт файлы")
+
+    def start():
+        state.update(running=True, fail=False, started=state["started"] + 1)
+        return True
+
+    pipe.analyzer.analyze = flaky
+    monkeypatch.setattr(pipeline_mod, "explain_read_error", diagnose)
+    monkeypatch.setattr(pipeline_mod, "onedrive_running", lambda: state["running"])
+    monkeypatch.setattr(pipeline_mod, "start_onedrive", start)
+    monkeypatch.setattr(pipeline_mod, "windows_read_error", lambda path: None)
+    plan = pipe.scan()
+    assert state["started"] == 1
+    assert "small.jpg" in {m.src.name for m in plan}
+    assert pipe.errors == 0
 
 
 def test_truncated_jpeg_is_readable(cfg, db):

@@ -10,6 +10,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from .media import NO_WINDOW
@@ -83,17 +84,49 @@ def explain_read_error(path: Path, error: Exception) -> str:
     if code in _PROVIDER_DOWN:
         raise CloudUnavailable(
             f"OneDrive не отдаёт файлы: «{text}» (код {code}). Обработка остановлена, файлы не тронуты.\n"
-            "Что сделать: щёлкните значок OneDrive в трее — если синхронизация на паузе, возобновите её. "
-            "Если не поможет, перезапустите OneDrive (значок → шестерёнка → «Закрыть OneDrive», "
-            "затем откройте OneDrive из меню «Пуск»). Проверьте, что файл открывается в проводнике, "
-            "и запустите разбор снова — уже разобранное пропустится.")
+            "Программа пробовала запустить OneDrive и подождать, но он так и не начал отдавать файлы.\n"
+            "Что сделать: щёлкните значок OneDrive в трее — если синхронизация на паузе, возобновите её "
+            "и проверьте, нет ли там ошибок. Если OneDrive продолжает закрываться сам, перезапустите компьютер. "
+            "Затем запустите разбор снова — уже разобранное пропустится.")
     return f"{text} (код Windows {code})"
+
+
+def onedrive_running() -> bool:
+    if sys.platform != "win32":
+        return True
+    out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq OneDrive.exe", "/NH"],
+                         capture_output=True, text=True, errors="ignore", **NO_WINDOW)
+    return "onedrive.exe" in out.stdout.lower()
+
+
+def onedrive_exe() -> Path | None:
+    for base in (os.environ.get("LOCALAPPDATA"), os.environ.get("ProgramFiles"), os.environ.get("ProgramFiles(x86)")):
+        if not base:
+            continue
+        for sub in ("Microsoft/OneDrive/OneDrive.exe", "Microsoft OneDrive/OneDrive.exe"):
+            candidate = Path(base) / sub
+            if candidate.exists():
+                return candidate
+    return None
+
+
+def start_onedrive() -> bool:
+    exe = onedrive_exe()
+    if exe is None:
+        return False
+    subprocess.Popen([str(exe), "/background"], **NO_WINDOW)
+    return True
 
 
 def free_up(path: Path) -> None:
     if sys.platform != "win32":
         return
     subprocess.run(["attrib", "+U", "-P", str(path)], capture_output=True, **NO_WINDOW)
+
+
+# Место освобождается, только если свободного меньше чем запас + HEADROOM.
+HEADROOM = 10 * 1024**3
+PAUSE = 0.05
 
 
 class Hydration:
@@ -122,11 +155,22 @@ class Hydration:
         if file_id in self.downloaded:
             self.downloaded[file_id] = new_path
 
+    def release_if_low(self) -> None:
+        """Между папками: освобождать место только когда его действительно мало."""
+        if self.downloaded and shutil.disk_usage(self.disk).free < self.reserve + HEADROOM:
+            self.release()
+
     def release(self) -> None:
         if not self.downloaded:
+            return
+        if not onedrive_running():
+            # Без OneDrive attrib не сработает; файлы просто останутся скачанными.
+            self.log(f"OneDrive не запущен — {len(self.downloaded)} скачанных файлов остаются на диске")
+            self.downloaded.clear()
             return
         self.log(f"Освобождаю место: {len(self.downloaded)} файлов снова только в облаке")
         for path in self.downloaded.values():
             if path.exists():
                 free_up(path)
+                time.sleep(PAUSE)  # тысячи команд подряд перегружают OneDrive
         self.downloaded.clear()
