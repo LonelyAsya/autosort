@@ -21,6 +21,7 @@ from .appdata import data_dir, ensure_config, open_path, set_path_setting, set_s
 from .config import Config, load_config
 from .db import Database
 from .onedrive import CloudUnavailable
+from . import updater
 from .pipeline import LazyTagger, Pipeline, Stopped, folder_choices, media_folders, write_plan_csv
 
 ALL_MONTHS = "Все папки"
@@ -55,6 +56,8 @@ class App:
         self.reload_config()
         root.protocol("WM_DELETE_WINDOW", self.on_close)
         root.after(100, self._poll)
+        if self.cfg is None or self.cfg.check_updates:
+            root.after(3000, self.check_updates)
 
     # --- интерфейс ---
 
@@ -120,6 +123,8 @@ class App:
         button(other, "Настройки…", lambda: open_path(self.config_path), 1, 1)
         button(other, "Списки тегов…", lambda: open_path(self.folder / "rules"), 1, 2)
         button(other, "Перечитать настройки", self.reload_config, 1, 3)
+        button(other, "Проверить обновления", lambda: self.check_updates(manual=True), 2, 0)
+        button(other, "Удалить программу…", self.uninstall, 2, 1)
 
         status = ttk.Frame(main)
         status.grid(row=3, column=0, sticky="ew", pady=(0, 4))
@@ -181,6 +186,11 @@ class App:
                     _, question, answer = event
                     answer["value"] = messagebox.askyesno("Autosort", question, parent=self.root)
                     answer["event"].set()
+                elif kind == "update":
+                    self._offer_update(*event[1:])
+                elif kind == "quit":
+                    self.root.destroy()
+                    return
                 elif kind == "warn":
                     messagebox.showwarning("Autosort", event[1], parent=self.root)
                 elif kind == "done":
@@ -404,6 +414,88 @@ class App:
         self.status_var.set("Останавливаю…")
         if self.server is not None:
             threading.Thread(target=self.server.shutdown, daemon=True).start()
+
+    # --- обновление и удаление ---
+
+    def check_updates(self, manual: bool = False) -> None:
+        def worker():
+            try:
+                release = updater.latest_release()
+            except Exception as e:
+                if manual:
+                    self.events.put(("warn", f"Не удалось проверить обновления: {e}"))
+                else:
+                    print(f"проверка обновлений не удалась: {e}", flush=True)
+                return
+            if updater.is_newer(release.version):
+                self.events.put(("update", release, manual))
+            elif manual:
+                self.log(f"Установлена последняя версия ({__version__}).")
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _offer_update(self, release: updater.Release, manual: bool) -> None:
+        self.log(f"Вышла версия {release.version} (у вас {__version__}).")
+        if self.busy and not manual:
+            self.log("Обновиться можно кнопкой «Проверить обновления», когда закончится задача.")
+            return
+        notes = updater.short_notes(release.notes)
+        folder = updater.installed_dir()
+        text = f"Вышла версия {release.version} (у вас {__version__}).\n\nЧто нового:\n{notes}\n\n"
+        if folder is None or not release.setup_url:
+            if messagebox.askyesno("Обновление Autosort", text + "Открыть страницу загрузки?", parent=self.root):
+                webbrowser.open(release.page)
+            return
+        if self.busy:
+            messagebox.showinfo("Обновление Autosort", text + "Обновиться можно, когда закончится текущая задача.",
+                                parent=self.root)
+            return
+        if messagebox.askyesno("Обновление Autosort", text + "Скачать и установить сейчас? Программа закроется "
+                               "и откроется уже новой версией, настройки и база сохранятся.", parent=self.root):
+            self._install_update(release, folder)
+
+    def _install_update(self, release: updater.Release, folder: Path) -> None:
+        self._set_busy(True)
+        self.stop_flag.clear()
+        self.log(f"— Обновление до {release.version} —")
+        mb = 1024 * 1024
+
+        def progress(done: int, total: int) -> None:
+            self.events.put(("progress", f"Скачиваю {release.version}", done // mb, max(total // mb, 1)))
+
+        def worker():
+            try:
+                setup = updater.download(release, progress, self.stop_flag.is_set)
+                self.log("Запускаю установщик, программа сейчас закроется…")
+                updater.run_installer(setup, folder)
+                self.events.put(("quit",))
+            except InterruptedError:
+                self.log("Обновление отменено.")
+                self.events.put(("done",))
+            except Exception as e:
+                self.log(f"Не удалось обновиться: {e}")
+                self.events.put(("done",))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def uninstall(self) -> None:
+        folder = updater.installed_dir()
+        if folder is None:
+            here = Path(sys.executable).parent if getattr(sys, "frozen", False) else None
+            text = ("Это портативная версия: чтобы удалить её, закройте программу и удалите её папку"
+                    + (f":\n{here}" if here else ".") +
+                    f"\n\nНастройки и база лежат в {self.folder}.")
+            messagebox.showinfo("Удаление Autosort", text, parent=self.root)
+            return
+        if self.busy:
+            messagebox.showinfo("Удаление Autosort", "Сначала дождитесь окончания задачи или остановите её.",
+                                parent=self.root)
+            return
+        if messagebox.askyesno("Удаление Autosort", "Удалить Autosort с компьютера?\n\nВаши фото и разложенные "
+                               "папки не затрагиваются. В конце удаления можно будет выбрать, стереть ли "
+                               "настройки, базу и нейросеть.", parent=self.root):
+            updater.run_uninstaller(folder)
+            self.root.destroy()
 
     def on_close(self) -> None:
         if self.busy:

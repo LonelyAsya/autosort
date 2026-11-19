@@ -14,6 +14,8 @@ DefaultDirName={localappdata}\Programs\Autosort
 DefaultGroupName=Autosort
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
+; Обновление из программы передаёт /ALLUSERS, если программа стоит в Program Files.
+PrivilegesRequiredOverridesAllowed=commandline
 OutputDir=..\dist
 OutputBaseFilename=Autosort-Setup-{#AppVersion}
 SetupIconFile=autosort.ico
@@ -42,8 +44,55 @@ Name: "{autodesktop}\Autosort"; Filename: "{app}\Autosort.exe"; Tasks: desktopic
 
 [Run]
 Filename: "{app}\Autosort.exe"; Description: "{cm:LaunchProgram,Autosort}"; Flags: nowait postinstall skipifsilent
+; Обновление из программы: после тихой установки открыть новую версию.
+Filename: "{app}\Autosort.exe"; Flags: nowait; Check: IsRelaunch
 
 [Code]
+const
+  UninstallKey = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{6C3E2B7A-4E0B-4F6E-9C55-2B9E1A7D0A11}_is1';
+
+function IsRelaunch: Boolean;
+begin
+  Result := ExpandConstant('{param:RELAUNCH|0}') = '1';
+end;
+
+function FindInstalled(var Uninstaller, Version: String): Boolean;
+begin
+  Result := RegQueryStringValue(HKCU, UninstallKey, 'UninstallString', Uninstaller);
+  if Result then
+    RegQueryStringValue(HKCU, UninstallKey, 'DisplayVersion', Version)
+  else
+  begin
+    Result := RegQueryStringValue(HKLM64, UninstallKey, 'UninstallString', Uninstaller);
+    if Result then
+      RegQueryStringValue(HKLM64, UninstallKey, 'DisplayVersion', Version);
+  end;
+  Uninstaller := RemoveQuotes(Uninstaller);
+end;
+
+// Если Autosort уже установлен, установщик предлагает обновить его или удалить.
+function InitializeSetup: Boolean;
+var
+  Uninstaller, Version: String;
+  Code: Integer;
+begin
+  Result := True;
+  if WizardSilent or not FindInstalled(Uninstaller, Version) then
+    Exit;
+  case TaskDialogMsgBox('Autosort уже установлен' + Format(' (версия %s)', [Version]),
+         'Можно установить версию {#AppVersion} поверх неё (настройки и база сохранятся) или удалить программу.',
+         mbConfirmation, MB_YESNOCANCEL, ['Установить {#AppVersion}', 'Удалить Autosort'], 0) of
+    IDYES: Result := True;
+    IDNO:
+      begin
+        Exec(Uninstaller, '', '', SW_SHOW, ewNoWait, Code);
+        Result := False;
+      end;
+  else
+    Result := False;
+  end;
+end;
+
 // После удаления программы спрашиваем, убрать ли и данные пользователя.
 // Фото и разложенные папки в OneDrive не трогаются никогда.
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);

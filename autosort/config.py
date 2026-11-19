@@ -74,6 +74,7 @@ class Config:
     onedrive_free_space: bool
     onedrive_reserve_bytes: int
     onedrive_free_every: int = 1
+    check_updates: bool = True
 
 
 def _parse_size(text: str) -> tuple[int, int]:
@@ -144,4 +145,5 @@ def load_config(path: str | Path) -> Config:
         onedrive_free_space=bool(onedrive.get("free_space", True)),
         onedrive_reserve_bytes=int(float(onedrive.get("reserve_gb", 3)) * 1024**3),
         onedrive_free_every=max(1, int(onedrive.get("free_every", 1))),
+        check_updates=bool(raw.get("app", {}).get("check_updates", True)),
     )

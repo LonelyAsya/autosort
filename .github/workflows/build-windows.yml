@@ -82,6 +82,10 @@ jobs:
           choco install innosetup -y --no-progress
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" packaging\installer.iss
 
+      - name: Проверка обновлений через GitHub
+        shell: pwsh
+        run: python -c "from autosort import updater; r = updater.latest_release(); assert r.setup_url, r; print('последний релиз', r.version, 'sha256' if r.setup_sha256 else 'без sha256')"
+
       - name: Проверка установки и удаления
         shell: pwsh
         run: |
@@ -95,6 +99,21 @@ jobs:
           if (-not (Test-Path "$dir\Autosort.exe")) { throw "Нет Autosort.exe" }
           $menus = [Environment]::GetFolderPath("Programs"), [Environment]::GetFolderPath("CommonPrograms")
           if (-not ($menus | Where-Object { Test-Path "$_\Autosort\Удалить Autosort.lnk" })) { throw "Нет ярлыка «Удалить Autosort» в Пуске" }
+          # Обновление из программы: запущенная программа закрывается, установщик ставит поверх и открывает новую.
+          $env:SETUP = $setup; $env:APPDIR = $dir
+          $old = Start-Process "$dir\Autosort.exe" -PassThru
+          Start-Sleep 15
+          python -c "import os; from pathlib import Path; from autosort import updater; updater.run_installer(Path(os.environ['SETUP']), Path(os.environ['APPDIR']))"
+          Start-Sleep 5
+          for ($i = 0; $i -lt 180 -and (Get-Process "Autosort-Setup-*" -ErrorAction SilentlyContinue); $i++) { Start-Sleep 1 }
+          if (Get-Process "Autosort-Setup-*" -ErrorAction SilentlyContinue) { throw "Установщик обновления завис" }
+          if (-not $old.HasExited) { throw "Старая версия не закрылась при обновлении" }
+          $new = $null
+          for ($i = 0; $i -lt 60 -and -not $new; $i++) { Start-Sleep 1; $new = Get-Process Autosort -ErrorAction SilentlyContinue }
+          if (-not $new) { throw "После обновления программа не запустилась заново" }
+          "Обновление поверх работает, программа перезапущена"
+          $new | Stop-Process -Force
+          Start-Sleep 3
           Start-Process "$dir\unins000.exe" -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART" -Wait
           for ($i = 0; $i -lt 60 -and (Test-Path "$dir\Autosort.exe"); $i++) { Start-Sleep 1 }
           if (Test-Path "$dir\Autosort.exe") { throw "Программа не удалилась" }
