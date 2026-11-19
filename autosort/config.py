@@ -73,6 +73,7 @@ class Config:
     phash_distance: int
     onedrive_free_space: bool
     onedrive_reserve_bytes: int
+    onedrive_free_every: int = 1
 
 
 def _parse_size(text: str) -> tuple[int, int]:
@@ -142,4 +143,5 @@ def load_config(path: str | Path) -> Config:
         phash_distance=int(raw.get("dupes", {}).get("phash_distance", 6)),
         onedrive_free_space=bool(onedrive.get("free_space", True)),
         onedrive_reserve_bytes=int(float(onedrive.get("reserve_gb", 3)) * 1024**3),
+        onedrive_free_every=max(1, int(onedrive.get("free_every", 1))),
     )

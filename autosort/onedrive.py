@@ -124,8 +124,7 @@ def free_up(path: Path) -> None:
     subprocess.run(["attrib", "+U", "-P", str(path)], capture_output=True, **NO_WINDOW)
 
 
-# Место освобождается, только если свободного меньше чем запас + HEADROOM.
-HEADROOM = 10 * 1024**3
+# Пауза между файлами при освобождении места: тысячи команд подряд перегружают OneDrive.
 PAUSE = 0.05
 
 
@@ -154,11 +153,6 @@ class Hydration:
     def moved(self, file_id: int, new_path: Path) -> None:
         if file_id in self.downloaded:
             self.downloaded[file_id] = new_path
-
-    def release_if_low(self) -> None:
-        """Между папками: освобождать место только когда его действительно мало."""
-        if self.downloaded and shutil.disk_usage(self.disk).free < self.reserve + HEADROOM:
-            self.release()
 
     def release(self) -> None:
         if not self.downloaded:

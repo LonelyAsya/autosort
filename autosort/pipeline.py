@@ -158,7 +158,7 @@ class Pipeline:
         reserved: set[Path] = set()
         hydration = self._hydration()
         try:
-            for name, folder in self.months(month):
+            for done, (name, folder) in enumerate(self.months(month), 1):
                 files = self._files_of(name, folder)
                 for path in self._iter(files, name or "(корень)"):
                     file_id = self._scan_file(path, name, full, hydration)
@@ -168,7 +168,8 @@ class Pipeline:
                     dst = unique_path(self.target_for(row, path.name), reserved)
                     reserved.add(dst)
                     plan.append(PlannedMove(file_id, path, dst, row["type"], row["category"]))
-                hydration.release_if_low()
+                if done % self.cfg.onedrive_free_every == 0:
+                    hydration.release()
         finally:
             hydration.release()
         if self.errors:
