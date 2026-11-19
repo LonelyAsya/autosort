@@ -84,6 +84,8 @@ jobs:
 
       - name: Проверка обновлений через GitHub
         shell: pwsh
+        env:
+          PYTHONIOENCODING: utf-8
         run: python -c "from autosort import updater; r = updater.latest_release(); assert r.setup_url, r; print('последний релиз', r.version, 'sha256' if r.setup_sha256 else 'без sha256')"
 
       - name: Проверка установки и удаления
