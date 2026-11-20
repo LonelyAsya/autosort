@@ -1,6 +1,7 @@
 """Разбор одного файла: метаданные, хэши, тип, теги, категория, автор."""
 from __future__ import annotations
 
+import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Protocol
@@ -11,7 +12,7 @@ from . import authors
 from .classify import Decision, classify_by_tags, pre_classify
 from .config import Config
 from .hashing import phash_hex, save_thumb, sha256_file, thumb_path
-from .media import MediaInfo, probe, sample_frames
+from .media import VIDEO_EXT, MediaInfo, probe, sample_frames
 from .tagger import TagResult, universe_of
 
 
@@ -44,13 +45,26 @@ def match_categories(tags: dict[str, float], cfg: Config) -> list[str]:
     return [c.name for c in cfg.categories if c.tags & present]
 
 
+def is_io_error(e: BaseException) -> bool:
+    """Ошибка чтения файла (стоит повторить), а не «непонятный формат» (повторять бесполезно)."""
+    return isinstance(e, subprocess.TimeoutExpired) or (isinstance(e, OSError) and e.errno is not None)
+
+
 def hash_media(path: Path, cfg: Config) -> tuple[MediaInfo, str, str | None, list[Image.Image]]:
     """Метаданные, sha256, отпечатки кадров; заодно сохраняет миниатюру."""
     # sha256 читает файл целиком — для OneDrive это и есть скачивание. Делаем его первым,
     # чтобы ffprobe и Pillow дальше работали с уже скачанным файлом, а не ждали облако.
     sha = sha256_file(path)
-    info = probe(path)
-    frames = sample_frames(path, info, cfg.video_frames)
+    try:
+        info = probe(path)
+        frames = sample_frames(path, info, cfg.video_frames)
+    except Exception as e:
+        if is_io_error(e):
+            raise  # сбой чтения (OneDrive, диск) — пусть повторяют
+        # Формат, который Pillow не понимает (например, игровая текстура DXT в .bmp): файл не ломаем,
+        # а отправляем на ручной разбор вместо бесконечных ошибок.
+        kind = "video" if path.suffix.lower() in VIDEO_EXT else "image"
+        info, frames = MediaInfo(kind, problem=f"{type(e).__name__}: {e}"), []
     phash = ",".join(phash_hex(f) for f in frames) or None
     if frames:
         save_thumb(frames[len(frames) // 2], thumb_path(cfg.cache_dir, sha))
@@ -66,7 +80,8 @@ class Analyzer:
     def analyze(self, path: Path) -> Analysis:
         cfg = self.cfg
         info, sha, phash, frames = hash_media(path, cfg)
-        decision = pre_classify(path.name, info, cfg)
+        decision = (Decision("review", f"не удалось прочитать файл: {info.problem}") if info.problem
+                    else pre_classify(path.name, info, cfg))
 
         result: TagResult | None = None
         if (decision is None or decision.type == "art") and frames:

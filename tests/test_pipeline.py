@@ -401,3 +401,18 @@ def test_dupes_in_any_folder(cfg, db, workspace):
     pipe.scan(move=True)
     rates = pipe.speed.rates()
     assert rates[FILES] > 0 and rates[MOVE] > 0
+
+
+def test_unreadable_format_goes_to_review(cfg, db):
+    month = make_library(cfg)
+    # BMP-заголовок со сжатием DXT3, которое Pillow не понимает (так бывают сохранены игровые текстуры)
+    import struct
+    header = b"BM" + struct.pack("<IHHI", 70, 0, 0, 54)
+    info = struct.pack("<IiiHHIIiiII", 40, 4, 4, 1, 32, 0x33545844, 16, 0, 0, 0, 0)
+    (month / "cruiser_texture.bmp").write_bytes(header + info + b"\0" * 16)
+    pipe = Pipeline(cfg, db, tagger(), progress=False)
+    pipe.retry_delays = (60, 60)  # повторов быть не должно, иначе тест «зависнет»
+    plan = {m.src.name: m for m in pipe.scan()}
+    assert plan["cruiser_texture.bmp"].type == "review"
+    assert pipe.errors == 0
+    assert "не удалось прочитать" in db.get(plan["cruiser_texture.bmp"].file_id)["reason"]

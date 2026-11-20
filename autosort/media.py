@@ -53,6 +53,7 @@ class MediaInfo:
     camera: str | None = None  # «Производитель Модель» из EXIF/метаданных видео
     taken_at: str | None = None  # ISO-дата съёмки
     has_location: bool = False
+    problem: str | None = None  # файл скачался, но картинку/видео прочитать не удалось
 
 
 def probe(path: Path) -> MediaInfo:

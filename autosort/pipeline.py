@@ -13,7 +13,7 @@ from typing import Callable, Iterator
 
 from tqdm import tqdm
 
-from .analyze import Analyzer, Tagger, hash_media, match_categories
+from .analyze import is_io_error, Analyzer, Tagger, hash_media, match_categories
 from .config import Config
 from .db import Database
 from .media import is_media
@@ -258,7 +258,7 @@ class Pipeline:
                     # OneDrive падает снова на том же файле — пропускаем его, чтобы не ронять OneDrive по кругу.
                     raise OSError("OneDrive падает при скачивании этого файла, пропускаю его. "
                                   "Попробуйте открыть его в проводнике или на onedrive.live.com") from e
-                if not delays:
+                if not delays or not is_io_error(e):  # «непонятный формат» ожиданием не исправить
                     raise OSError(reason) from e
                 delay = delays.pop(0)
                 self.log(f"{path.name}: {reason} — повтор через {delay:g} с")
