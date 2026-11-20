@@ -17,7 +17,7 @@ from .analyze import Analyzer, Tagger, hash_media, match_categories
 from .config import Config
 from .db import Database
 from .media import is_media
-from .onedrive import CloudUnavailable, Hydration, explain_read_error, onedrive_running, start_onedrive, windows_read_error
+from .onedrive import CloudUnavailable, Hydration, explain_read_error, onedrive_running, start_onedrive
 
 
 class Stopped(Exception):
@@ -109,8 +109,9 @@ class Pipeline:
         # (Errno 22, недокачанный файл), особенно пока освобождает место.
         self.retry_delays: tuple[float, ...] = (5, 30)
         # Если OneDrive закрылся, программа сама запускает его и ждёт до revive_timeout секунд.
-        self.revive_timeout = 180.0
-        self.max_revivals = 5
+        self.revive_timeout = 120.0
+        self.revive_settle = 30.0
+        self.max_revivals = 5  # подряд, без единого удачно прочитанного файла между ними
         self.revivals = 0
         self.errors = 0
         sauce = None
@@ -152,14 +153,21 @@ class Pipeline:
 
     # --- разбор ---
 
-    def scan(self, month: str | None = None, full: bool = False) -> list[PlannedMove]:
-        """Разбирает новые файлы источника и возвращает план переноса. Файлы не трогает."""
+    def scan(self, month: str | None = None, full: bool = False, move: bool = False) -> list[PlannedMove]:
+        """Разбирает новые файлы источника и возвращает план переноса.
+
+        move=False — файлы не трогаются. move=True — каждая папка переносится сразу после разбора,
+        чтобы сбой или остановка посреди большой библиотеки не теряли уже сделанное.
+        Все папки одного запуска — один перенос в журнале, откатываются вместе."""
         plan: list[PlannedMove] = []
         reserved: set[Path] = set()
+        batch: int | None = None
+        moved = 0
         hydration = self._hydration()
         try:
             for done, (name, folder) in enumerate(self.months(month), 1):
                 files = self._files_of(name, folder)
+                folder_plan: list[PlannedMove] = []
                 for path in self._iter(files, name or "(корень)"):
                     file_id = self._scan_file(path, name, full, hydration)
                     if file_id is None:
@@ -167,11 +175,20 @@ class Pipeline:
                     row = self.db.get(file_id)
                     dst = unique_path(self.target_for(row, path.name), reserved)
                     reserved.add(dst)
-                    plan.append(PlannedMove(file_id, path, dst, row["type"], row["category"]))
+                    folder_plan.append(PlannedMove(file_id, path, dst, row["type"], row["category"]))
+                plan += folder_plan
+                if move and folder_plan:
+                    if batch is None:
+                        batch = self.db.new_batch()
+                    n = self._move(folder_plan, batch, hydration)
+                    moved += n
+                    self.log(f"{name or '(корень)'}: перенесено {n}")
                 if done % self.cfg.onedrive_free_every == 0:
                     hydration.release()
         finally:
             hydration.release()
+            if batch is not None:
+                self.log(f"Всего перенесено файлов: {moved}. Номер переноса для отката: {batch}")
         if self.errors:
             self.log(f"Не удалось разобрать файлов: {self.errors}. Они останутся на месте; "
                      "при следующем запуске программа попробует их снова.")
@@ -219,41 +236,49 @@ class Pipeline:
 
     def _with_retries(self, path: Path, action):
         delays = list(self.retry_delays)
+        cloud_failures = 0
         while True:
             try:
-                return action()
+                result = action()
+                self.revivals = 0
+                return result
             except (OSError, subprocess.TimeoutExpired) as e:
                 try:
                     reason = explain_read_error(path, e)
                 except CloudUnavailable:
-                    if self._revive_onedrive(path):
+                    cloud_failures += 1
+                    if not self._revive_onedrive():
+                        raise  # останавливает всю обработку
+                    if cloud_failures == 1:
                         continue  # OneDrive снова работает — тот же файл ещё раз
-                    raise  # останавливает всю обработку
+                    # OneDrive падает снова на том же файле — пропускаем его, чтобы не ронять OneDrive по кругу.
+                    raise OSError("OneDrive падает при скачивании этого файла, пропускаю его. "
+                                  "Попробуйте открыть его в проводнике или на onedrive.live.com") from e
                 if not delays:
                     raise OSError(reason) from e
                 delay = delays.pop(0)
                 self.log(f"{path.name}: {reason} — повтор через {delay:g} с")
                 self._sleep(delay)
 
-    def _revive_onedrive(self, path: Path) -> bool:
-        """OneDrive закрылся или завис: запускает его и ждёт, пока файл снова начнёт читаться."""
+    def _revive_onedrive(self) -> bool:
+        """OneDrive упал или не отвечает: запускает его и даёт время прийти в себя.
+
+        Не проверяем тем же файлом: если OneDrive падает именно на нём, проверка уронила бы его снова."""
         if self.revivals >= self.max_revivals:
             return False
         self.revivals += 1
         if not onedrive_running():
-            self.log("OneDrive закрылся — запускаю его заново")
+            self.log("OneDrive упал — запускаю его заново")
             if not start_onedrive():
                 self.log("Не нашёл OneDrive.exe, запустите OneDrive вручную")
                 return False
+            end = time.monotonic() + self.revive_timeout
+            while not onedrive_running() and time.monotonic() < end:
+                self._sleep(2)
         else:
             self.log("OneDrive не отдаёт файлы — жду, пока он придёт в себя")
-        end = time.monotonic() + self.revive_timeout
-        while time.monotonic() < end:
-            self._sleep(5)
-            if windows_read_error(path) is None:
-                self.log("OneDrive снова работает, продолжаю")
-                return True
-        return False
+        self._sleep(self.revive_settle)
+        return True
 
     def target_for(self, row, filename: str) -> Path:
         parts = [self.cfg.folders[row["type"]]]
@@ -272,6 +297,11 @@ class Pipeline:
     def apply(self, plan: list[PlannedMove]) -> int:
         """Переносит файлы по плану. Каждое действие сначала пишется в журнал."""
         batch = self.db.new_batch()
+        done = self._move(plan, batch)
+        self.log(f"Перенесено файлов: {done}. Номер переноса для отката: {batch}")
+        return batch
+
+    def _move(self, plan: list[PlannedMove], batch: int, hydration: Hydration | None = None) -> int:
         done = 0
         for m in self._iter(plan, "Перенос"):
             if not m.src.exists():
@@ -287,11 +317,12 @@ class Pipeline:
                 continue
             self.db.set_location(m.file_id, dst, "moved")
             self.db.journal_state(move_id, "done")
+            if hydration is not None:
+                hydration.moved(m.file_id, dst)
             if self._in_target(m.src):  # перекладка внутри результата: убираем опустевшие папки
                 remove_empty_dirs(m.src.parent, self.cfg.target)
             done += 1
-        self.log(f"Перенесено файлов: {done}. Номер переноса для отката: {batch}")
-        return batch
+        return done
 
     def undo(self, batch: int | None = None) -> int:
         batch = batch or self.db.last_move_batch()

@@ -295,11 +295,70 @@ def test_closed_onedrive_is_restarted(cfg, db, monkeypatch):
     monkeypatch.setattr(pipeline_mod, "explain_read_error", diagnose)
     monkeypatch.setattr(pipeline_mod, "onedrive_running", lambda: state["running"])
     monkeypatch.setattr(pipeline_mod, "start_onedrive", start)
-    monkeypatch.setattr(pipeline_mod, "windows_read_error", lambda path: None)
     plan = pipe.scan()
     assert state["started"] == 1
     assert "small.jpg" in {m.src.name for m in plan}
     assert pipe.errors == 0
+
+
+def test_file_that_crashes_onedrive_is_skipped(cfg, db, monkeypatch):
+    import autosort.pipeline as pipeline_mod
+    from autosort.onedrive import CloudUnavailable
+
+    make_library(cfg)
+    pipe = Pipeline(cfg, db, tagger(), progress=False)
+    pipe._sleep = lambda seconds: None
+    real = pipe.analyzer.analyze
+    starts = []
+
+    def crashes_onedrive(path):
+        if path.name == "small.jpg":
+            raise OSError(22, "Invalid argument")
+        return real(path)
+
+    def diagnose(path, error):
+        raise CloudUnavailable("OneDrive упал")
+
+    pipe.analyzer.analyze = crashes_onedrive
+    monkeypatch.setattr(pipeline_mod, "explain_read_error", diagnose)
+    monkeypatch.setattr(pipeline_mod, "onedrive_running", lambda: False)
+    monkeypatch.setattr(pipeline_mod, "start_onedrive", lambda: starts.append(1) or True)
+    pipe.revive_timeout = 0
+    plan = pipe.scan()
+    assert len(starts) == 2  # перезапуск, повтор, снова упал — перезапуск и пропуск
+    names = {m.src.name for m in plan}
+    assert "small.jpg" not in names and "copy.png" in names  # остальные файлы разобраны
+    assert db.get_by_path(cfg.source / "2024-05" / "small.jpg")["status"] == "error"
+
+
+def test_sort_moves_each_folder_right_away(cfg, db, monkeypatch):
+    import autosort.pipeline as pipeline_mod
+    from autosort.onedrive import CloudUnavailable
+
+    first = make_library(cfg)
+    second = cfg.source / "2024-06"
+    second.mkdir()
+    noise_image(20).save(second / "11111111_p0.png")
+    pipe = Pipeline(cfg, db, tagger(), progress=False)
+    pipe.max_revivals = 0
+    real = pipe.analyzer.analyze
+
+    def broken_in_june(path):
+        if path.parent == second:
+            raise OSError(22, "Invalid argument")
+        return real(path)
+
+    def diagnose(path, error):
+        raise CloudUnavailable("OneDrive не отдаёт файлы")
+
+    pipe.analyzer.analyze = broken_in_june
+    monkeypatch.setattr(pipeline_mod, "explain_read_error", diagnose)
+    with pytest.raises(CloudUnavailable):
+        pipe.scan(move=True)
+    assert not any(first.iterdir())  # май уже разложен, хотя июнь сорвался
+    assert (second / "11111111_p0.png").exists()
+    assert pipe.undo() == 6  # откат возвращает всё перенесённое за запуск
+    assert len(list(first.iterdir())) == 6
 
 
 def test_truncated_jpeg_is_readable(cfg, db):

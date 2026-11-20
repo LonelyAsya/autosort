@@ -309,10 +309,10 @@ class App:
         return Pipeline(cfg, db, self.tagger, log=self.log, progress=self.report_progress,
                         should_stop=self.stop_flag.is_set)
 
-    def _scan(self, cfg: Config, db: Database):
+    def _scan(self, cfg: Config, db: Database, move: bool = False):
         month = self.month_var.get()
         pipe = self.pipeline(cfg, db)
-        plan = pipe.scan(None if month == ALL_MONTHS else month, self.full_var.get())
+        plan = pipe.scan(None if month == ALL_MONTHS else month, self.full_var.get(), move=move)
         if not plan:
             self.log("Новых файлов нет.")
             return pipe, plan, ""
@@ -338,10 +338,15 @@ class App:
         self.run_task("Пробный прогон", job)
 
     def do_sort(self) -> None:
+        if not messagebox.askyesno(
+                "Autosort", "Разложить файлы?\n\nПрограмма разбирает папки по очереди и переносит каждую "
+                "сразу после разбора, так что при сбое или остановке уже разложенное остаётся разложенным.\n\n"
+                "Посмотреть заранее, что куда поедет, можно «Пробным прогоном». Всё можно откатить кнопкой "
+                "«Откатить последний перенос».", parent=self.root):
+            return
+
         def job(cfg, db):
-            pipe, plan, summary = self._scan(cfg, db)
-            if plan and self.ask(f"Перенести файлы?\n\n{summary}\n\nВсё можно будет откатить."):
-                pipe.apply(plan)
+            self._scan(cfg, db, move=True)
         self.run_task("Сортировка", job)
 
     def do_recategorize(self) -> None:

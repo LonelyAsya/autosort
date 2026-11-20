@@ -90,17 +90,16 @@ def run(args, cfg, db: Database) -> None:
         if not cfg.source.exists():
             sys.exit(f"Папка-источник не найдена: {cfg.source}")
         pipe = Pipeline(cfg, db)
-        plan = pipe.scan(args.month, args.full)
+        if args.cmd == "sort" and not args.yes and input(
+                "Разбирать и сразу переносить папку за папкой? [y/N] ").strip().lower() not in ("y", "д", "да", "yes"):
+            print("Отменено.")
+            return
+        plan = pipe.scan(args.month, args.full, move=args.cmd == "sort")
         print_plan_summary(plan, cfg)
         if args.cmd == "plan" and plan:
             out = cfg.base_dir / "plan.csv"
             write_plan_csv(plan, out)
             print(f"Подробный план: {out}")
-        if args.cmd == "sort" and plan:
-            if not args.yes and input("Перенести? [y/N] ").strip().lower() not in ("y", "д", "да", "yes"):
-                print("Отменено.")
-                return
-            pipe.apply(plan)
 
     elif args.cmd in ("dupes", "dupes-only"):
         from .review import serve
