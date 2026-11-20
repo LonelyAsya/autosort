@@ -8,7 +8,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import messagebox, simpledialog, ttk
 
-from .appdata import open_path, safe_file_name, save_categories, set_setting, toml_value
+from .appdata import open_path, safe_file_name, save_categories, save_custom_folders, set_setting, toml_value
 from .config import Config, normalize_tag
 
 PAD = {"padx": 8, "pady": 3}
@@ -46,6 +46,8 @@ class SettingsWindow:
                            ("screenshot", "Скриншоты"), ("review", "Ручной разбор")):
             self._entry(tab, title, "folders", key, cfg.folders[key])
         self._check(tab, "Внутри папок сохранять подпапки год/месяц", "layout", "by_month", cfg.by_month)
+
+        self._custom_tab(self._tab(book, "Свои папки"))
 
         tab = self._tab(book, "Нейросеть")
         self._check(tab, "Подписывать арты тегами нейросетью", "tagger", "enabled", cfg.tagger_enabled)
@@ -88,6 +90,158 @@ class SettingsWindow:
                    command=lambda: open_path(app.config_path)).pack(side="left")
         ttk.Button(bottom, text="Сохранить", command=self.save).pack(side="right")
         ttk.Button(bottom, text="Отмена", command=self.win.destroy).pack(side="right", padx=8)
+
+    # --- свои папки верхнего уровня ---
+
+    def _custom_tab(self, tab) -> None:
+        raw = tomllib.loads(self.app.config_path.read_text(encoding="utf-8"))
+        self.custom = []
+        for c in raw.get("custom_folders", []):
+            path = self.app.cfg.base_dir / c["tags_file"] if c.get("tags_file") else None
+            self.custom.append({"name": c["name"], "tags_file": c.get("tags_file"),
+                                "patterns": list(c.get("patterns", [])),
+                                "text": path.read_text(encoding="utf-8") if path and path.exists() else ""})
+        self.custom_dirty = False
+        ttk.Label(tab, text="Папки рядом с «Камерой», «Артами», «Мемами» и т. д. Файл попадает в первую папку, "
+                  "у которой совпала маска имени или хоть один тег нейросети. Свои папки проверяются раньше "
+                  "встроенных, сверху вниз. Теги ставятся артам, мемам и файлам для ручного разбора; "
+                  "фото с камеры и скриншоты попадают в свои папки только по маске имени.",
+                  wraplength=520, **HINT).grid(row=0, column=0, columnspan=2, sticky="w", **PAD)
+        self.custom_list = tk.Listbox(tab, height=8, exportselection=False)
+        self.custom_list.grid(row=1, column=0, sticky="nsew", **PAD)
+        self.custom_list.bind("<Double-Button-1>", lambda e: self._edit_custom())
+        side = ttk.Frame(tab)
+        side.grid(row=1, column=1, sticky="n", **PAD)
+        for text, cmd in (("Добавить", self._add_custom), ("Изменить", self._edit_custom),
+                          ("Удалить", self._remove_custom), ("▲ Выше", lambda: self._move_custom(-1)),
+                          ("▼ Ниже", lambda: self._move_custom(1))):
+            ttk.Button(side, text=text, command=cmd).pack(fill="x", pady=2)
+        tab.columnconfigure(0, weight=1)
+        tab.columnconfigure(1, weight=0)
+        self._fill_custom()
+
+    def _fill_custom(self, select: int | None = None) -> None:
+        self.custom_list.delete(0, "end")
+        for i, c in enumerate(self.custom, 1):
+            rules = []
+            if c["patterns"]:
+                rules.append("имена: " + ", ".join(c["patterns"]))
+            n = sum(1 for line in c["text"].splitlines() if line.strip() and not line.lstrip().startswith("#"))
+            if n:
+                rules.append(f"тегов: {n}")
+            self.custom_list.insert("end", f"{i}. {c['name']}  ({'; '.join(rules) or 'правил нет'})")
+        if select is not None and self.custom:
+            self.custom_list.selection_set(max(0, min(select, len(self.custom) - 1)))
+
+    def _selected_custom(self) -> int | None:
+        sel = self.custom_list.curselection()
+        return sel[0] if sel else None
+
+    def _custom_dialog(self, item: dict | None) -> dict | None:
+        dlg = tk.Toplevel(self.win)
+        dlg.title("Своя папка")
+        dlg.transient(self.win)
+        dlg.grab_set()
+        frame = ttk.Frame(dlg, padding=10)
+        frame.pack(fill="both", expand=True)
+        frame.columnconfigure(0, weight=1)
+        frame.rowconfigure(5, weight=1)
+        name = tk.StringVar(value=item["name"] if item else "")
+        masks = tk.StringVar(value=", ".join(item["patterns"]) if item else "")
+        ttk.Label(frame, text="Название папки:").grid(row=0, column=0, sticky="w")
+        name_entry = ttk.Entry(frame, textvariable=name)
+        name_entry.grid(row=1, column=0, sticky="ew", pady=(0, 8))
+        ttk.Label(frame, text="Маски имён файлов через запятую (необязательно):").grid(row=2, column=0, sticky="w")
+        ttk.Entry(frame, textvariable=masks).grid(row=3, column=0, sticky="ew")
+        ttk.Label(frame, text="* — любые символы. Например: *telegram*, IMG_*.heic, *wallpaper*",
+                  **HINT).grid(row=4, column=0, sticky="nw", pady=(0, 8))
+        tags_box = ttk.LabelFrame(frame, text="Теги нейросети, по одному на строку (необязательно)", padding=4)
+        tags_box.grid(row=5, column=0, sticky="nsew")
+        tags_box.columnconfigure(0, weight=1)
+        tags_box.rowconfigure(0, weight=1)
+        text = tk.Text(tags_box, width=50, height=10, undo=True)
+        text.grid(row=0, column=0, sticky="nsew")
+        text.insert("1.0", item["text"] if item else "")
+        ttk.Label(frame, text="Названия тегов можно подсмотреть в «Категории и теги» → «Найти тег».",
+                  **HINT).grid(row=6, column=0, sticky="w")
+        result: dict = {}
+
+        def ok():
+            n = name.get().strip()
+            if not n:
+                messagebox.showerror("Своя папка", "Укажите название папки.", parent=dlg)
+                return
+            builtin = {var.get().strip().lower() for sec, _, var, _, _ in self.fields if sec == "folders"}
+            others = {c["name"].lower() for c in self.custom if c is not item}
+            if n.lower() in builtin | others:
+                messagebox.showerror("Своя папка", f"Папка «{n}» уже есть.", parent=dlg)
+                return
+            patterns = [m.strip() for m in masks.get().split(",") if m.strip()]
+            body = text.get("1.0", "end-1c")
+            if not patterns and not any(line.strip() and not line.lstrip().startswith("#")
+                                        for line in body.splitlines()):
+                messagebox.showerror("Своя папка", "Добавьте хотя бы маску имени или один тег — "
+                                     "иначе в папку ничего не попадёт.", parent=dlg)
+                return
+            result.update(name=n, patterns=patterns, text=body)
+            dlg.destroy()
+
+        buttons = ttk.Frame(frame)
+        buttons.grid(row=7, column=0, sticky="e", pady=(8, 0))
+        ttk.Button(buttons, text="Отмена", command=dlg.destroy).pack(side="right")
+        ttk.Button(buttons, text="Готово", command=ok).pack(side="right", padx=8)
+        name_entry.focus_set()
+        dlg.wait_window()
+        return result or None
+
+    def _add_custom(self) -> None:
+        data = self._custom_dialog(None)
+        if not data:
+            return
+        used = {c["tags_file"] for c in self.custom}
+        stem, n = "папка " + safe_file_name(data["name"]), 1
+        file = f"rules/{stem}.txt"
+        while file in used or (self.app.cfg.base_dir / file).exists():
+            n += 1
+            file = f"rules/{stem} {n}.txt"
+        self.custom.append({**data, "tags_file": file})
+        self.custom_dirty = True
+        self._fill_custom(len(self.custom) - 1)
+
+    def _edit_custom(self) -> None:
+        i = self._selected_custom()
+        if i is None:
+            return
+        data = self._custom_dialog(self.custom[i])
+        if data:
+            self.custom[i].update(data)
+            self.custom_dirty = True
+            self._fill_custom(i)
+
+    def _remove_custom(self) -> None:
+        i = self._selected_custom()
+        if i is not None and messagebox.askyesno(
+                "Свои папки", f"Убрать папку «{self.custom[i]['name']}» из правил?\n\nУже разложенные файлы "
+                "останутся на месте, пока вы не нажмёте «Пересчитать категории».", parent=self.win):
+            del self.custom[i]
+            self.custom_dirty = True
+            self._fill_custom(i)
+
+    def _move_custom(self, step: int) -> None:
+        i = self._selected_custom()
+        if i is not None and 0 <= i + step < len(self.custom):
+            self.custom[i], self.custom[i + step] = self.custom[i + step], self.custom[i]
+            self.custom_dirty = True
+            self._fill_custom(i + step)
+
+    def _save_custom(self) -> None:
+        base = self.app.cfg.base_dir
+        for c in self.custom:
+            path = base / c["tags_file"]
+            path.parent.mkdir(parents=True, exist_ok=True)
+            text = c["text"]
+            path.write_text(text if not text or text.endswith("\n") else text + "\n", encoding="utf-8")
+        save_custom_folders(self.app.config_path, self.custom)
 
     # --- построение полей ---
 
@@ -168,12 +322,25 @@ class SettingsWindow:
                 return
             if new != old:
                 changes.append((section, key, new))
+        builtin = {v.lower() for sec, key, var, _, _ in self.fields if sec == "folders" for v in [var.get().strip()]}
+        clash = [c["name"] for c in self.custom if c["name"].lower() in builtin]
+        if clash:
+            messagebox.showerror("Настройки", f"Своя папка «{clash[0]}» называется так же, как встроенная.",
+                                 parent=self.win)
+            return
         for section, key, value in changes:
             set_setting(self.app.config_path, section, key, toml_value(value))
+        if self.custom_dirty:
+            self._save_custom()
         self.win.destroy()
-        if changes:
-            self.app.reload_config()
-            self.app.log(f"Настройки сохранены (изменено: {len(changes)}).")
+        if changes or self.custom_dirty:
+            if not self.app.reload_config():
+                return
+            self.app.log(f"Настройки сохранены (изменено: {len(changes) + bool(self.custom_dirty)}).")
+        if self.custom_dirty and messagebox.askyesno(
+                "Настройки", "Свои папки сохранены.\n\nПересчитать уже разобранные файлы по новым правилам сейчас? "
+                "Это быстро: без нейросети и без скачивания.", parent=self.app.root):
+            self.app.do_recategorize()
 
 
 def library_tags(db_path: Path) -> list[tuple[str, int]]:

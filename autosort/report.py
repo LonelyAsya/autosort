@@ -26,6 +26,9 @@ def build_report(cfg: Config, db: Database, top: int = 30) -> str:
     types = Counter(r["type"] for r in rows)
     for t in TYPE_NAMES:
         lines.append(f"  {cfg.folders[t]}: {types.get(t, 0)} ({_pct(types.get(t, 0), total)})")
+    custom = Counter(r["category"] for r in rows if r["type"] == "custom")
+    for name, n in custom.most_common():
+        lines.append(f"  {name} (своя папка): {n} ({_pct(n, total)})")
 
     def section(title: str, counter: Counter) -> None:
         lines.extend(["", f"{title} (от числа артов: {n_art})"])

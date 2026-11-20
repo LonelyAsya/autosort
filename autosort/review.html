@@ -42,6 +42,8 @@
               border-radius: 6px; display: block; cursor: zoom-in; }
   .badge { display: inline-block; font-size: 12px; color: var(--keep); border: 1px solid var(--keep);
            border-radius: 6px; padding: 0 6px; margin: 4px 0 2px; }
+  .sim { display: inline-block; font-size: 12px; margin: 4px 0 2px; padding: 0 6px; border-radius: 6px;
+         border: 1px solid var(--line); background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 25%, transparent) var(--p), transparent var(--p)); }
   .meta { font-size: 13px; color: var(--muted); word-break: break-all; }
   .meta b { color: var(--text); font-weight: 600; }
   .empty { text-align: center; color: var(--muted); padding: 60px 0; }
@@ -93,7 +95,10 @@ function render() {
     const keep = keepOf(g);
     const el = document.createElement("section");
     el.className = "group";
-    el.innerHTML = `<div class="group-head"><span>${g.exact ? "Точные копии" : "Похожие"} · ${g.items.length} шт.</span>
+    const sims = g.items.filter(i => i.id !== g.keep && i.similarity != null).map(i => i.similarity);
+    const low = sims.length ? Math.min(...sims) : null;
+    el.innerHTML = `<div class="group-head"><span>${g.exact ? "Точные копии" : "Похожие"} · ${g.items.length} шт.` +
+      `${!g.exact && low != null ? ` · схожесть от ${low}%` : ""}</span>
       <div class="actions"></div></div>`;
     const actions = el.querySelector(".actions");
     const apply = document.createElement("button");
@@ -119,7 +124,9 @@ function render() {
       card.className = "item" + (keep.has(it.id) ? " keep" : "");
       card.innerHTML = `
         <img loading="lazy" src="/thumb/${it.id}" alt="">
-        ${it.id === g.keep ? '<span class="badge">Советуем оставить</span>' : ""}
+        ${it.id === g.keep ? '<span class="badge">Советуем оставить</span>'
+          : `<span class="sim" style="--p:${it.similarity ?? 0}%">${it.similarity == null ? "схожесть ?"
+              : it.similarity === 100 ? "100% — та же картинка" : `схожесть ${it.similarity}%`}</span>`}
         <div class="meta"><b>${it.width || "?"}×${it.height || "?"}</b> · ${fmtSize(it.size || 0)} · ${esc(it.date.slice(0, 10))}</div>
         <div class="meta" title="${esc(it.path)}">${esc(it.name)}</div>
         <label><input type="checkbox" ${keep.has(it.id) ? "checked" : ""}> Оставить</label>`;

@@ -38,7 +38,8 @@ class ReviewState:
                 date = r["taken_at"] or (datetime.fromtimestamp(r["mtime"]).isoformat(timespec="seconds")
                                          if r["mtime"] else "")
                 items.append(dict(id=i, name=Path(r["path"]).name, path=r["path"], width=r["width"],
-                                  height=r["height"], size=r["size"], date=date, kind=r["kind"]))
+                                  height=r["height"], size=r["size"], date=date, kind=r["kind"],
+                                  similarity=(g.similarity or {}).get(i)))
             out.append(dict(key=g.key, keep=g.keep, exact=g.exact, items=items))
         return out
 

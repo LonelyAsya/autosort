@@ -31,12 +31,14 @@ class Analysis:
     author: str | None = None
     source: str | None = None
     tags: list[tuple[str, str, float]] = field(default_factory=list)
+    base_type: str | None = None  # тип до своих папок: по нему пересчитываются категории
 
     def fields(self) -> dict:
         i = self.info
         return dict(kind=i.kind, width=i.width, height=i.height, duration=i.duration, camera=i.camera,
                     taken_at=i.taken_at, sha256=self.sha256, phash=self.phash, type=self.type,
-                    reason=self.reason, category=self.category, author=self.author, source=self.source)
+                    reason=self.reason, category=self.category, author=self.author, source=self.source,
+                    base_type=self.base_type or self.type)
 
 
 def match_categories(tags: dict[str, float], cfg: Config) -> list[str]:
@@ -84,7 +86,9 @@ class Analyzer:
                     else pre_classify(path.name, info, cfg))
 
         result: TagResult | None = None
-        if (decision is None or decision.type == "art") and frames:
+        wants_tags = decision is None or decision.type == "art" or (
+            decision.type in ("meme", "review") and any(c.tags for c in cfg.custom_folders))
+        if wants_tags and frames:
             tagger = self.get_tagger()
             if tagger is not None:
                 result = tagger.tag(frames)
@@ -118,4 +122,9 @@ class Analyzer:
                         a.author, a.source = author, source
                 except Exception:  # сеть/лимит — не повод останавливать сортировку
                     pass
+        a.base_type = a.type
+        found_all = {**result.general, **result.characters, **universes} if result else {}
+        if custom := cfg.match_custom(path.name, found_all):
+            a.type, a.category = "custom", custom.name
+            a.reason = f"своя папка «{custom.name}»; {a.reason}"
         return a

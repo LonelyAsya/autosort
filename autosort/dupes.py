@@ -18,6 +18,7 @@ class Group:
     ids: list[int]
     keep: int
     exact: bool
+    similarity: dict[int, int | None] = None  # схожесть с подсказанным файлом, %; None — сравнить нельзя
 
 
 def _popcount(x: np.ndarray) -> np.ndarray:
@@ -49,6 +50,19 @@ def _similar_pairs(ids: list[int], hashes: np.ndarray, threshold: float):
             d = d.mean(axis=1)
         for j in np.nonzero(d <= threshold)[0]:
             yield ids[i], ids[i + 1 + int(j)]
+
+
+def similarity_percent(a, b) -> int | None:
+    """Схожесть двух файлов в процентах: 100 — одинаковые, по отпечаткам — 100 × (1 − расстояние / 64)."""
+    if a["sha256"] and a["sha256"] == b["sha256"]:
+        return 100
+    if not a["phash"] or not b["phash"]:
+        return None
+    ha, hb = a["phash"].split(","), b["phash"].split(",")
+    if len(ha) != len(hb):
+        return None
+    dist = sum(bin(int(x, 16) ^ int(y, 16)).count("1") for x, y in zip(ha, hb)) / len(ha)
+    return max(0, round(100 * (1 - dist / 64)))
 
 
 def keep_choice(rows: list) -> int:
@@ -121,7 +135,9 @@ def find_groups(db: Database, threshold: int, roots: list[Path] | None = None) -
         if key in ignored:
             continue
         exact = len({by_id[i]["sha256"] for i in ids}) == 1
-        result.append(Group(key, ids, keep_choice([by_id[i] for i in ids]), exact))
+        keep = keep_choice([by_id[i] for i in ids])
+        sim = {i: similarity_percent(by_id[keep], by_id[i]) for i in ids}
+        result.append(Group(key, ids, keep, exact, sim))
     result.sort(key=lambda g: (not g.exact, -len(g.ids)))
     return result
 
@@ -248,12 +264,18 @@ def dupes_report(db: Database, groups: list[Group], folder: Path) -> str:
              f"Групп: {len(groups)} (точных копий: {exact}, похожих: {len(groups) - exact})",
              f"Лишних файлов: {sum(len(g.ids) - 1 for g in groups)}",
              f"Можно освободить: {reclaimable_bytes(db, groups) / 1024**2:.1f} МБ",
-             "", "«*» — файл, который советуем оставить (больше разрешение, потом размер, потом старше).", ""]
+             "", "«*» — файл, который советуем оставить (больше разрешение, потом размер, потом старше).",
+             "Проценты — схожесть с ним: 100% — одинаковое изображение, чем меньше, тем больше отличий.", ""]
     for n, g in enumerate(groups, 1):
-        lines.append(f"{n}. {'Точные копии' if g.exact else 'Похожие'}, {len(g.ids)} шт.")
+        low = min((v for v in (g.similarity or {}).values() if v is not None), default=None)
+        sim_head = f", схожесть от {low}%" if low is not None and not g.exact else ""
+        lines.append(f"{n}. {'Точные копии' if g.exact else 'Похожие'}, {len(g.ids)} шт.{sim_head}")
         for i in g.ids:
             r = db.get(i)
             mark = "*" if i == g.keep else " "
-            lines.append(f"  {mark} {r['width'] or '?'}×{r['height'] or '?'}  {(r['size'] or 0) / 1024**2:6.1f} МБ  {r['path']}")
+            sim = (g.similarity or {}).get(i)
+            sim_text = "образец" if i == g.keep else (f"{sim:3d}%" if sim is not None else "   ?")
+            lines.append(f"  {mark} {sim_text:>7}  {r['width'] or '?'}×{r['height'] or '?'}  "
+                         f"{(r['size'] or 0) / 1024**2:6.1f} МБ  {r['path']}")
         lines.append("")
     return "\n".join(lines)

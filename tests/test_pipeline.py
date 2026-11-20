@@ -416,3 +416,66 @@ def test_unreadable_format_goes_to_review(cfg, db):
     assert plan["cruiser_texture.bmp"].type == "review"
     assert pipe.errors == 0
     assert "не удалось прочитать" in db.get(plan["cruiser_texture.bmp"].file_id)["reason"]
+
+
+def add_custom_folders(workspace, body: str):
+    from autosort.config import load_config
+
+    config = workspace / "config.toml"
+    config.write_text(config.read_text(encoding="utf-8") + "\n" + body, encoding="utf-8")
+    return load_config(config)
+
+
+def test_custom_folders_by_name_and_tags(workspace, db):
+    (workspace / "rules").mkdir(exist_ok=True)
+    (workspace / "rules" / "cats.txt").write_text("cat\n", encoding="utf-8")
+    cfg = add_custom_folders(workspace, """
+[[custom_folders]]
+name = "Телеграм"
+patterns = ["*screenshot*"]
+
+[[custom_folders]]
+name = "Котики"
+tags_file = "rules/cats.txt"
+""")
+    make_library(cfg)
+    pipe = Pipeline(cfg, db, tagger(), progress=False)
+    plan = {m.src.name: m for m in pipe.scan()}
+    assert (plan["Screenshot_20240502.png"].type, plan["Screenshot_20240502.png"].category) == ("custom", "Телеграм")
+    assert plan["landscape.png"].category == "Котики"  # у пейзажа есть тег cat
+    assert plan["IMG_20240501_100000.jpg"].type == "camera"
+    dst = plan["landscape.png"].dst
+    assert dst.relative_to(cfg.target).parts[0] == "Котики"
+    assert db.get(plan["landscape.png"].file_id)["base_type"] == "art"
+
+    pipe.apply(list(plan.values()))
+    # правило убрали — пересчёт возвращает файлы в их обычные папки без нейросети
+    from autosort.config import load_config
+
+    config = workspace / "config.toml"
+    text = config.read_text(encoding="utf-8")
+    config.write_text(text[:text.index("[[custom_folders]]")], encoding="utf-8")
+    pipe = Pipeline(load_config(config), db, None, progress=False)
+    changed, moves = pipe.recategorize()
+    assert changed == 2
+    targets = {m.src.name: m for m in moves}
+    assert targets["landscape.png"].type == "art"
+    assert targets["Screenshot_20240502.png"].type == "screenshot"
+    assert targets["Screenshot_20240502.png"].dst.relative_to(pipe.cfg.target).parts[0] == "Скриншоты"
+
+
+def test_similarity_percent(cfg, db):
+    make_library(cfg)
+    Pipeline(cfg, db, tagger(), progress=False).scan()
+    groups = find_groups(db, cfg.phash_distance)
+    art = next(g for g in groups if len(g.ids) == 3)
+    names = {Path(db.get(i)["path"]).name: art.similarity[i] for i in art.ids}
+    assert names["98765432_p0.png"] == 100 and names["copy.png"] == 100
+    assert names["small.jpg"] >= 90 and not art.exact  # уменьшенная копия: по виду та же
+
+    from autosort.dupes import similarity_percent
+    a = {"sha256": "1", "phash": "ffffffffffffffff"}
+    assert similarity_percent(a, {"sha256": "2", "phash": "fffffffffffffff0"}) == 94  # 4 бита из 64
+    assert similarity_percent(a, {"sha256": "2", "phash": "0000000000000000"}) == 0
+    assert similarity_percent(a, {"sha256": "1", "phash": None}) == 100
+    assert similarity_percent(a, {"sha256": "2", "phash": "ff,ff"}) is None  # картинка и видео

@@ -223,6 +223,7 @@ class Pipeline:
                 "AND status IN ('analyzed', 'moved') LIMIT 1", (a.sha256, str(path))).fetchone()
             if twin is not None:
                 a.type, a.category, a.author, a.source = twin["type"], twin["category"], twin["author"], twin["source"]
+                a.base_type = twin["base_type"] or twin["type"]
                 a.reason = f"копия {Path(twin['path']).name}"
         file_id = self.db.save_file(path, tags=a.tags, month=month, size=st.st_size, mtime=st.st_mtime,
                                     status="analyzed", error=None, **a.fields())
@@ -285,7 +286,7 @@ class Pipeline:
         return True
 
     def target_for(self, row, filename: str) -> Path:
-        parts = [self.cfg.folders[row["type"]]]
+        parts = [self.cfg.folder_name(row["type"], row["category"])]
         if row["type"] == "art" and row["category"]:
             parts.append(row["category"])
         if self.cfg.by_month:
@@ -358,30 +359,43 @@ class Pipeline:
     # --- пересчёт категорий по тегам из базы ---
 
     def recategorize(self) -> tuple[int, list[PlannedMove]]:
-        """Применяет текущие списки тегов к уже разобранным артам без нейросети и без скачивания.
+        """Применяет текущие категории артов и свои папки к уже разобранным файлам
+        без нейросети и без скачивания: по тегам и именам из базы.
 
-        Возвращает, у скольких артов сменилась категория, и план перекладки тех,
-        что уже разложены по папкам. Ещё не разложенные просто получат новую категорию.
+        Возвращает, у скольких файлов сменилась папка, и план перекладки тех,
+        что уже разложены. Ещё не разложенные просто получат новую папку.
         """
         rows = self.db.conn.execute(
-            "SELECT * FROM files WHERE type = 'art' AND status IN ('analyzed', 'moved')").fetchall()
+            "SELECT * FROM files WHERE type IS NOT NULL AND status IN ('analyzed', 'moved')").fetchall()
         changed = 0
         plan: list[PlannedMove] = []
         reserved: set[Path] = set()
         for row in self._iter(rows, "Категории"):
+            base = row["base_type"] or row["type"]
+            if base == "custom":  # тип до своих папок неизвестен — не трогаем
+                continue
             tags = {t["tag"]: t["score"] for t in self.db.tags_of(row["id"])
                     if t["kind"] in ("general", "character", "universe")}
-            cats = match_categories(tags, self.cfg)
-            category = cats[0] if cats else self.cfg.default_category
-            self.db.set_category(row["id"], category, cats[1:])
-            if category == row["category"]:
+            extra: list[str] = []
+            if custom := self.cfg.match_custom(Path(row["orig_path"] or row["path"]).name, tags):
+                new_type, category = "custom", custom.name
+            elif base == "art":
+                cats = match_categories(tags, self.cfg)
+                new_type, category, extra = "art", cats[0] if cats else self.cfg.default_category, cats[1:]
+            else:
+                new_type, category = base, None
+            same = new_type == row["type"] and category == row["category"]
+            if not same or base == "art" or row["base_type"] is None:
+                self.db.set_classification(row["id"], new_type, base, category, extra)
+            if same:
                 continue
             changed += 1
             if row["status"] == "moved":
                 current = Path(row["path"])
-                dst = unique_path(self.target_for({**dict(row), "category": category}, current.name), reserved)
+                dst = unique_path(self.target_for({**dict(row), "type": new_type, "category": category},
+                                                  current.name), reserved)
                 reserved.add(dst)
-                plan.append(PlannedMove(row["id"], current, dst, "art", category))
+                plan.append(PlannedMove(row["id"], current, dst, new_type, category))
         return changed, plan
 
     # --- только отпечатки (для режима «Только дубли») ---

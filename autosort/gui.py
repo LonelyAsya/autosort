@@ -91,7 +91,7 @@ class App:
             box.columnconfigure(1, weight=1)
             ttk.Label(box, text=label, width=20).grid(row=0, column=0, sticky="w", **pad)
             ttk.Entry(box, textvariable=var, state="readonly").grid(row=0, column=1, sticky="ew", **pad)
-            b = ttk.Button(box, text="Выбрать…", command=command)
+            b = ttk.Button(box, text="Выбрать", command=command)
             b.grid(row=0, column=2, **pad)
             self.buttons.append(b)
 
@@ -134,11 +134,11 @@ class App:
         button(report, "Откатить последний перенос", self.do_undo, 0, 2)
 
         program = block("Программа", 4, 5)
-        button(program, "Настройки…", self.open_settings, 0, 0)
-        button(program, "Категории и теги…", self.open_categories, 0, 1)
+        button(program, "Настройки", self.open_settings, 0, 0)
+        button(program, "Категории и теги", self.open_categories, 0, 1)
         button(program, "Перечитать настройки", self.reload_config, 0, 2)
         button(program, "Проверить обновления", lambda: self.check_updates(manual=True), 0, 3)
-        button(program, "Удалить программу…", self.uninstall, 0, 4)
+        button(program, "Удалить программу", self.uninstall, 0, 4)
 
         status = ttk.Frame(main)
         status.grid(row=5, column=0, sticky="ew", pady=(0, 4))
@@ -309,7 +309,7 @@ class App:
             return
         folder = {"source": self.cfg.source, "target": self.cfg.target, "dupes": self.cfg.dupes_folder}[key]
         if folder is None:
-            messagebox.showinfo("Autosort", "Сначала выберите папку кнопкой «Выбрать…».")
+            messagebox.showinfo("Autosort", "Сначала выберите папку кнопкой «Выбрать».")
         elif folder.exists():
             open_path(folder)
         else:
@@ -361,7 +361,7 @@ class App:
             return pipe, plan, ""
         lines = [f"Файлов: {len(plan)}"]
         for (t, cat), n in sorted(Counter((m.type, m.category) for m in plan).items(), key=lambda x: -x[1]):
-            lines.append(f"  {cfg.folders[t]}{' / ' + cat if cat else ''}: {n}")
+            lines.append(f"  {cfg.folder_name(t, cat)}{' / ' + cat if cat and t != 'custom' else ''}: {n}")
         summary = "\n".join(lines)
         self.log(summary)
         return pipe, plan, summary
@@ -396,13 +396,14 @@ class App:
         def job(cfg, db):
             pipe = self.pipeline(cfg, db)
             changed, plan = pipe.recategorize()
-            self.log(f"Категории пересчитаны по тегам из базы. Изменилась у артов: {changed}")
+            self.log(f"Категории и свои папки пересчитаны по тегам из базы. Папка сменилась у файлов: {changed}")
             if not plan:
                 return
-            counts = Counter(m.category for m in plan)
+            counts = Counter(cfg.folder_name(m.type, m.category) + (f" / {m.category}" if m.type == "art" else "")
+                             for m in plan)
             summary = "\n".join(f"  → {cat}: {n}" for cat, n in counts.most_common())
             self.log(f"Уже разложенных, которые поедут в другую папку: {len(plan)}\n{summary}")
-            if self.ask(f"Переложить {len(plan)} уже разложенных артов в новые папки?\n\n{summary}\n\n"
+            if self.ask(f"Переложить {len(plan)} уже разложенных файлов в новые папки?\n\n{summary}\n\n"
                         "Это можно будет откатить."):
                 pipe.apply(plan)
         self.run_task("Пересчёт категорий", job, need_source=False)
@@ -432,7 +433,7 @@ class App:
             return None
         folder = self.cfg.dupes_folder
         if folder is None or not folder.is_dir():
-            messagebox.showwarning("Autosort", "Сначала выберите папку в блоке «Дубли» кнопкой «Выбрать…».")
+            messagebox.showwarning("Autosort", "Сначала выберите папку в блоке «Дубли» кнопкой «Выбрать».")
             return None
         return folder
 

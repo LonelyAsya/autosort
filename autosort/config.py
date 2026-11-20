@@ -3,7 +3,8 @@ from __future__ import annotations
 
 import re
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from fnmatch import fnmatch
 from pathlib import Path
 
 FOLDER_KEYS = ("camera", "art", "meme", "screenshot", "review")
@@ -34,6 +35,20 @@ def read_tag_file(path: Path) -> set[str]:
 class Category:
     name: str
     tags: set[str]
+
+
+@dataclass
+class CustomFolder:
+    """Своя папка верхнего уровня (рядом с «Камерой», «Артами»…): файлы попадают в неё по маске имени
+    или по тегам нейросети. Проверяется раньше встроенных типов, по порядку."""
+    name: str
+    tags: set[str]
+    patterns: list[str]
+    tags_file: str | None = None
+
+    def matches_name(self, filename: str) -> bool:
+        low = filename.lower()
+        return any(fnmatch(low, p.lower()) for p in self.patterns)
 
 
 @dataclass
@@ -76,6 +91,20 @@ class Config:
     onedrive_free_every: int = 1
     check_updates: bool = True
     dupes_folder: Path | None = None
+    custom_folders: list[CustomFolder] = field(default_factory=list)
+
+    def folder_name(self, type_: str, category: str | None = None) -> str:
+        """Название папки верхнего уровня для типа файла (у своих папок — их имя)."""
+        if type_ == "custom":
+            return category or "?"
+        return self.folders.get(type_, type_)
+
+    def match_custom(self, filename: str, tags) -> CustomFolder | None:
+        present = set(tags)
+        for folder in self.custom_folders:
+            if folder.matches_name(filename) or folder.tags & present:
+                return folder
+        return None
 
 
 def _parse_size(text: str) -> tuple[int, int]:
@@ -110,6 +139,11 @@ def load_config(path: str | Path) -> Config:
     categories = [
         Category(c["name"], read_tag_file(resolve(c["tags_file"])))
         for c in cats.get("list", [])
+    ]
+    custom_folders = [
+        CustomFolder(c["name"], read_tag_file(resolve(c["tags_file"])) if c.get("tags_file") else set(),
+                     [str(x) for x in c.get("patterns", [])], c.get("tags_file"))
+        for c in raw.get("custom_folders", [])
     ]
 
     return Config(
@@ -147,5 +181,6 @@ def load_config(path: str | Path) -> Config:
         onedrive_reserve_bytes=int(float(onedrive.get("reserve_gb", 3)) * 1024**3),
         onedrive_free_every=max(1, int(onedrive.get("free_every", 1))),
         check_updates=bool(raw.get("app", {}).get("check_updates", True)),
+        custom_folders=custom_folders,
         dupes_folder=resolve(raw["dupes"]["folder"]) if raw.get("dupes", {}).get("folder") else None,
     )

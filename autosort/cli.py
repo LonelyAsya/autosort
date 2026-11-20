@@ -28,7 +28,7 @@ def print_plan_summary(plan, cfg) -> None:
         return
     print(f"\nК переносу: {len(plan)} файлов")
     for (t, cat), n in sorted(Counter((m.type, m.category) for m in plan).items(), key=lambda x: -x[1]):
-        name = cfg.folders[t] + (f" / {cat}" if cat else "")
+        name = cfg.folder_name(t, cat) + (f" / {cat}" if cat and t != "custom" else "")
         print(f"  {name}: {n}")
 
 

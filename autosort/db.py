@@ -59,7 +59,7 @@ CREATE TABLE IF NOT EXISTS dupe_ignored (
 """
 
 FILE_FIELDS = ("month", "size", "mtime", "kind", "width", "height", "duration", "camera", "taken_at",
-               "sha256", "phash", "type", "reason", "category", "author", "source", "status", "error")
+               "sha256", "phash", "type", "reason", "category", "author", "source", "status", "error", "base_type")
 
 
 def now() -> str:
@@ -73,6 +73,10 @@ class Database:
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.execute("PRAGMA journal_mode = WAL")
         self.conn.executescript(SCHEMA)
+        columns = {r["name"] for r in self.conn.execute("PRAGMA table_info(files)")}
+        if "base_type" not in columns:  # база от версий до 2.1: тип без учёта своих папок
+            with self.conn:
+                self.conn.execute("ALTER TABLE files ADD COLUMN base_type TEXT")
 
     def close(self) -> None:
         self.conn.close()
@@ -124,6 +128,16 @@ class Database:
         with self.conn:
             self.conn.execute("UPDATE files SET category = ?, updated_at = ? WHERE id = ?",
                               (category, now(), file_id))
+            self.conn.execute("DELETE FROM tags WHERE file_id = ? AND kind = 'category'", (file_id,))
+            self.conn.executemany("INSERT INTO tags (file_id, kind, tag, score) VALUES (?, 'category', ?, 1.0)",
+                                  [(file_id, c) for c in extra])
+
+    def set_classification(self, file_id: int, type_: str, base_type: str, category: str | None,
+                           extra: list[str]) -> None:
+        """Тип, исходный тип (без своих папок), категория и запасные категории."""
+        with self.conn:
+            self.conn.execute("UPDATE files SET type = ?, base_type = ?, category = ?, updated_at = ? WHERE id = ?",
+                              (type_, base_type, category, now(), file_id))
             self.conn.execute("DELETE FROM tags WHERE file_id = ? AND kind = 'category'", (file_id,))
             self.conn.executemany("INSERT INTO tags (file_id, kind, tag, score) VALUES (?, 'category', ?, 1.0)",
                                   [(file_id, c) for c in extra])
