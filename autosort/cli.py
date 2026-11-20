@@ -65,6 +65,8 @@ def _main(argv: list[str] | None = None) -> None:
         p = sub.add_parser(name, help=help_text)
         p.add_argument("--port", type=int, default=8765)
         p.add_argument("--no-browser", action="store_true", help="не открывать браузер автоматически")
+        if name == "dupes-only":
+            p.add_argument("--folder", help="искать дубли в этой папке, а не во всей библиотеке")
 
     p = sub.add_parser("recategorize", help="Пересчитать категории по тегам из базы (без нейросети и скачивания)")
     p.add_argument("-y", "--yes", action="store_true", help="не спрашивать подтверждение перекладки")
@@ -104,10 +106,11 @@ def run(args, cfg, db: Database) -> None:
     elif args.cmd in ("dupes", "dupes-only"):
         from .review import serve
 
+        roots = [Path(args.folder)] if getattr(args, "folder", None) else None
         if args.cmd == "dupes-only":
-            n = Pipeline(cfg, db).hash_library()
+            n = Pipeline(cfg, db).hash_library(roots)
             print(f"Новых отпечатков: {n}")
-        serve(cfg, db, args.port, not args.no_browser)
+        serve(cfg, db, args.port, not args.no_browser, roots=roots)
 
     elif args.cmd == "recategorize":
         pipe = Pipeline(cfg, db)

@@ -17,15 +17,16 @@ from .hashing import thumb_path
 
 
 class ReviewState:
-    def __init__(self, cfg: Config, db: Database, log=print):
+    def __init__(self, cfg: Config, db: Database, log=print, roots: list[Path] | None = None):
         self.cfg = cfg
         self.db = db
         self.log = log
+        self.roots = roots
         self.groups: dict[str, Group] = {}
         self.refresh()
 
     def refresh(self) -> None:
-        self.groups = {g.key: g for g in find_groups(self.db, self.cfg.phash_distance)}
+        self.groups = {g.key: g for g in find_groups(self.db, self.cfg.phash_distance, self.roots)}
 
     def to_json(self) -> list[dict]:
         out = []
@@ -117,9 +118,14 @@ def make_handler(state: ReviewState):
     return Handler
 
 
-def create_server(cfg: Config, db: Database, port: int = 8765, log=print) -> tuple[HTTPServer, str] | None:
-    """Готовит сервер окна дублей. None — дублей нет. Если порт занят, берёт следующий."""
-    state = ReviewState(cfg, db, log)
+def create_server(cfg: Config, db: Database, port: int = 8765, log=print,
+                  roots: list[Path] | None = None) -> tuple[HTTPServer, str] | None:
+    """Готовит сервер окна дублей. None — дублей нет. Если порт занят, берёт следующий.
+
+    roots — в каких папках искать; по умолчанию источник и папка результата."""
+    if roots is None:
+        roots = [cfg.source, cfg.target]
+    state = ReviewState(cfg, db, log, roots)
     if not state.groups:
         log("Дублей не найдено.")
         return None
@@ -136,8 +142,9 @@ def create_server(cfg: Config, db: Database, port: int = 8765, log=print) -> tup
     return server, url
 
 
-def serve(cfg: Config, db: Database, port: int = 8765, open_browser: bool = True, log=print) -> None:
-    created = create_server(cfg, db, port, log)
+def serve(cfg: Config, db: Database, port: int = 8765, open_browser: bool = True, log=print,
+          roots: list[Path] | None = None) -> None:
+    created = create_server(cfg, db, port, log, roots)
     if created is None:
         return
     server, url = created

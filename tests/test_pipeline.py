@@ -379,3 +379,25 @@ def test_windows_read_error(tmp_path):
     code, text = windows_read_error(tmp_path / "нет.txt")
     assert code == 2 and text
     assert "код Windows 2" in explain_read_error(tmp_path / "нет.txt", OSError(22, "Invalid argument"))
+
+
+def test_dupes_in_any_folder(cfg, db, workspace):
+    from autosort.dupes import find_groups
+    from autosort.speed import FILES, MOVE
+
+    make_library(cfg)
+    other = workspace / "Загрузки"
+    other.mkdir()
+    noise_image(30).save(other / "a.png")
+    (other / "b.png").write_bytes((other / "a.png").read_bytes())
+    pipe = Pipeline(cfg, db, tagger(), progress=False)
+    assert pipe.hash_library([other]) == 2
+    groups = find_groups(db, cfg.phash_distance, [other])
+    assert len(groups) == 1 and groups[0].exact
+    # обычный поиск по библиотеке чужую папку не захватывает
+    assert all(not str(db.get(i)["path"]).startswith(str(other))
+               for g in find_groups(db, cfg.phash_distance, [cfg.source, cfg.target]) for i in g.ids)
+
+    pipe.scan(move=True)
+    rates = pipe.speed.rates()
+    assert rates[FILES] > 0 and rates[MOVE] > 0

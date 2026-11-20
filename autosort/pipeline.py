@@ -17,6 +17,7 @@ from .analyze import Analyzer, Tagger, hash_media, match_categories
 from .config import Config
 from .db import Database
 from .media import is_media
+from .speed import DOWNLOAD, FILES, MOVE, Speedometer
 from .onedrive import CloudUnavailable, Hydration, explain_read_error, onedrive_running, start_onedrive
 
 
@@ -98,8 +99,9 @@ def folder_choices(folders: list[tuple[str, Path]]) -> list[str]:
 class Pipeline:
     def __init__(self, cfg: Config, db: Database, get_tagger: Callable[[], Tagger | None] | None = None,
                  log=print, progress: bool | Callable[[str, int, int], None] = True,
-                 should_stop: Callable[[], bool] | None = None):
+                 should_stop: Callable[[], bool] | None = None, speed: Speedometer | None = None):
         self.cfg = cfg
+        self.speed = speed or Speedometer()
         self.db = db
         self.log = log
         # True — полоска в консоли, функция (подпись, сделано, всего) — для окна программы
@@ -130,6 +132,7 @@ class Pipeline:
             if report:
                 report(label, i, len(items))
             yield item
+            self.speed.add(FILES)
             if bar:
                 bar.update()
         if report:
@@ -224,6 +227,7 @@ class Pipeline:
         file_id = self.db.save_file(path, tags=a.tags, month=month, size=st.st_size, mtime=st.st_mtime,
                                     status="analyzed", error=None, **a.fields())
         if downloaded:
+            self.speed.add(DOWNLOAD, st.st_size)
             hydration.track(file_id, path)
         return file_id
 
@@ -309,6 +313,7 @@ class Pipeline:
             dst = unique_path(m.dst, set()) if m.dst.exists() else m.dst
             move_id = self.db.journal(batch, m.file_id, "move", m.src, dst)
             try:
+                size = m.src.stat().st_size
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 shutil.move(str(m.src), str(dst))
             except OSError as e:
@@ -317,6 +322,7 @@ class Pipeline:
                 continue
             self.db.set_location(m.file_id, dst, "moved")
             self.db.journal_state(move_id, "done")
+            self.speed.add(MOVE, size)
             if hydration is not None:
                 hydration.moved(m.file_id, dst)
             if self._in_target(m.src):  # перекладка внутри результата: убираем опустевшие папки
@@ -380,9 +386,13 @@ class Pipeline:
 
     # --- только отпечатки (для режима «Только дубли») ---
 
-    def hash_library(self) -> int:
-        """Считает хэши и отпечатки всей библиотеки (источник + результат), ничего не перенося."""
-        roots = [r for r in (self.cfg.source, self.cfg.target) if r.exists()]
+    def hash_library(self, roots: list[Path] | None = None) -> int:
+        """Считает хэши и отпечатки файлов, ничего не перенося.
+
+        roots — папки для обхода; по умолчанию вся библиотека (источник + результат)."""
+        if roots is None:
+            roots = [self.cfg.source, self.cfg.target]
+        roots = [r for r in roots if r.exists()]
         files: list[Path] = []
         for r in roots:
             other = [x for x in roots if x != r]
@@ -410,6 +420,8 @@ class Pipeline:
             self.errors += 1
             self.log(f"Ошибка: {path.name}: {e}")
             return 0
+        if downloaded:
+            self.speed.add(DOWNLOAD, st.st_size)
         status = row["status"] if row is not None and row["status"] != "error" else "hashed"
         file_id = self.db.save_file(path, size=st.st_size, mtime=st.st_mtime, kind=info.kind,
                                     width=info.width, height=info.height, duration=info.duration,

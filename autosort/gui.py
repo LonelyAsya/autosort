@@ -22,6 +22,7 @@ from .config import Config, load_config
 from .db import Database
 from .onedrive import CloudUnavailable
 from . import updater
+from .speed import Speedometer
 from .pipeline import LazyTagger, Pipeline, Stopped, folder_choices, media_folders, write_plan_csv
 
 ALL_MONTHS = "Все папки"
@@ -40,6 +41,8 @@ class App:
         self.busy = False
         self._tagger_key = None
         self._months_source: Path | None = None
+        self.speed = Speedometer()
+        self._dupes_folder: str | None = None
 
         root.title(f"Autosort {__version__} — сортировка медиатеки")
         root.minsize(720, 560)
@@ -125,12 +128,15 @@ class App:
         button(other, "Перечитать настройки", self.reload_config, 1, 3)
         button(other, "Проверить обновления", lambda: self.check_updates(manual=True), 2, 0)
         button(other, "Удалить программу…", self.uninstall, 2, 1)
+        button(other, "Дубли в другой папке…", self.do_dupes_folder, 2, 2)
 
         status = ttk.Frame(main)
         status.grid(row=3, column=0, sticky="ew", pady=(0, 4))
         status.columnconfigure(0, weight=1)
         self.status_var = tk.StringVar(value="Готово")
         ttk.Label(status, textvariable=self.status_var).grid(row=0, column=0, sticky="w")
+        self.speed_var = tk.StringVar(value="")
+        ttk.Label(status, textvariable=self.speed_var, foreground="#555").grid(row=2, column=0, columnspan=2, sticky="w")
         self.stop_button = ttk.Button(status, text="Остановить", command=self.stop, state="disabled")
         self.stop_button.grid(row=0, column=1, sticky="e")
         self.progress = ttk.Progressbar(status, mode="determinate")
@@ -201,6 +207,9 @@ class App:
                     self.month_box.configure(values=[ALL_MONTHS, *event[2]])
         except queue.Empty:
             pass
+        self._ticks = getattr(self, "_ticks", 0) + 1
+        if self._ticks % 10 == 0:
+            self.speed_var.set(self.speed.text() if self.busy else "")
         self.root.after(100, self._poll)
 
     def _set_busy(self, busy: bool) -> None:
@@ -284,6 +293,7 @@ class App:
             return
         self._set_busy(True)
         self.stop_flag.clear()
+        self.speed.reset()
         self.status_var.set(title + "…")
         self.log(f"— {title} —")
 
@@ -307,7 +317,7 @@ class App:
 
     def pipeline(self, cfg: Config, db: Database) -> Pipeline:
         return Pipeline(cfg, db, self.tagger, log=self.log, progress=self.report_progress,
-                        should_stop=self.stop_flag.is_set)
+                        should_stop=self.stop_flag.is_set, speed=self.speed)
 
     def _scan(self, cfg: Config, db: Database, move: bool = False):
         month = self.month_var.get()
@@ -364,14 +374,15 @@ class App:
                 pipe.apply(plan)
         self.run_task("Пересчёт категорий", job, need_source=False)
 
-    def do_dupes(self, whole_library: bool) -> None:
+    def do_dupes(self, whole_library: bool, folder: Path | None = None) -> None:
         def job(cfg, db):
             from .review import create_server
 
-            if whole_library:
-                n = self.pipeline(cfg, db).hash_library()
+            roots = [folder] if folder else None
+            if whole_library or folder:
+                n = self.pipeline(cfg, db).hash_library(roots)
                 self.log(f"Новых отпечатков: {n}")
-            created = create_server(cfg, db, log=self.log)
+            created = create_server(cfg, db, log=self.log, roots=roots)
             if created is None:
                 return
             self.server, url = created
@@ -382,7 +393,18 @@ class App:
                 self.server.serve_forever()
             finally:
                 self.server.server_close()
-        self.run_task("Только дубли" if whole_library else "Поиск дублей", job, need_source=whole_library)
+        title = f"Дубли в {folder}" if folder else "Только дубли" if whole_library else "Поиск дублей"
+        self.run_task(title, job, need_source=whole_library)
+
+    def do_dupes_folder(self) -> None:
+        if self.busy:
+            return
+        chosen = filedialog.askdirectory(title="В какой папке искать дубли?", parent=self.root,
+                                         initialdir=self._dupes_folder or str(Path.home()), mustexist=True)
+        if not chosen:
+            return
+        self._dupes_folder = chosen
+        self.do_dupes(False, Path(chosen))
 
     def do_report(self) -> None:
         def job(cfg, db):

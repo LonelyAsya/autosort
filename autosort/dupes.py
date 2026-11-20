@@ -59,10 +59,19 @@ def keep_choice(rows: list) -> int:
     return min(rows, key=key)["id"]
 
 
-def find_groups(db: Database, threshold: int) -> list[Group]:
+def _inside(path: str, roots: list[Path]) -> bool:
+    p = Path(path)
+    return any(p == r or r in p.parents for r in roots)
+
+
+def find_groups(db: Database, threshold: int, roots: list[Path] | None = None) -> list[Group]:
+    """roots — искать только среди файлов в этих папках (None — среди всех известных базе)."""
     rows = db.conn.execute(
         f"SELECT * FROM files WHERE sha256 IS NOT NULL AND status IN ({','.join('?' * len(ACTIVE))})", ACTIVE
     ).fetchall()
+    if roots is not None:
+        resolved = [Path(r).resolve() for r in roots]
+        rows = [r for r in rows if _inside(str(Path(r["path"]).resolve()), resolved)]
     rows = [r for r in rows if Path(r["path"]).exists()]
     by_id = {r["id"]: r for r in rows}
     uf = _UnionFind()
