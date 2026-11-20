@@ -17,7 +17,8 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 from . import __version__
-from .appdata import data_dir, ensure_config, open_path, set_path_setting, set_setting
+from .appdata import data_dir, ensure_config, open_path, set_path_setting, set_setting, toml_value
+from .settings_ui import CategoriesWindow, SettingsWindow
 from .config import Config, load_config
 from .db import Database
 from .onedrive import CloudUnavailable
@@ -42,10 +43,9 @@ class App:
         self._tagger_key = None
         self._months_source: Path | None = None
         self.speed = Speedometer()
-        self._dupes_folder: str | None = None
 
         root.title(f"Autosort {__version__} — сортировка медиатеки")
-        root.minsize(720, 560)
+        root.minsize(900, 720)
         try:
             icon = resources.files("autosort").joinpath("data", "icon.png").read_bytes()
             self._icon = tk.PhotoImage(data=icon)
@@ -70,22 +70,38 @@ class App:
         main.pack(fill="both", expand=True)
         main.columnconfigure(0, weight=1)
 
-        paths = ttk.LabelFrame(main, text="Папки", padding=8)
-        paths.grid(row=0, column=0, sticky="ew", pady=(0, 8))
-        paths.columnconfigure(1, weight=1)
+        self.buttons: list[ttk.Button] = []
+
+        def button(parent, text, command, row, col, span=1):
+            b = ttk.Button(parent, text=text, command=command)
+            b.grid(row=row, column=col, columnspan=span, sticky="ew", **pad)
+            self.buttons.append(b)
+            return b
+
+        def block(title: str, row: int, columns: int) -> ttk.LabelFrame:
+            frame = ttk.LabelFrame(main, text=title, padding=6)
+            frame.grid(row=row, column=0, sticky="ew", pady=(0, 6))
+            for col in range(columns):
+                frame.columnconfigure(col, weight=1)
+            return frame
+
+        def folder_row(parent, row, label, var, command):
+            box = ttk.Frame(parent)
+            box.grid(row=row, column=0, columnspan=4, sticky="ew")
+            box.columnconfigure(1, weight=1)
+            ttk.Label(box, text=label, width=20).grid(row=0, column=0, sticky="w", **pad)
+            ttk.Entry(box, textvariable=var, state="readonly").grid(row=0, column=1, sticky="ew", **pad)
+            b = ttk.Button(box, text="Выбрать…", command=command)
+            b.grid(row=0, column=2, **pad)
+            self.buttons.append(b)
+
+        paths = block("Папки", 0, 4)
         self.source_var = tk.StringVar()
         self.target_var = tk.StringVar()
-        for row, (label, var, key) in enumerate((
-            ("Откуда:", self.source_var, "source"),
-            ("Куда раскладывать:", self.target_var, "target"),
-        )):
-            ttk.Label(paths, text=label).grid(row=row, column=0, sticky="w", **pad)
-            ttk.Entry(paths, textvariable=var, state="readonly").grid(row=row, column=1, sticky="ew", **pad)
-            ttk.Button(paths, text="Выбрать…", command=lambda k=key: self.choose_folder(k)).grid(
-                row=row, column=2, **pad)
+        folder_row(paths, 0, "Откуда:", self.source_var, lambda: self.choose_folder("source"))
+        folder_row(paths, 1, "Куда раскладывать:", self.target_var, lambda: self.choose_folder("target"))
 
-        sort = ttk.LabelFrame(main, text="Сортировка", padding=8)
-        sort.grid(row=1, column=0, sticky="ew", pady=(0, 8))
+        sort = block("Сортировка", 1, 4)
         ttk.Label(sort, text="Год / месяц:").grid(row=0, column=0, sticky="w", **pad)
         self.month_var = tk.StringVar(value=ALL_MONTHS)
         self.month_box = ttk.Combobox(sort, textvariable=self.month_var, state="readonly", width=22)
@@ -93,45 +109,39 @@ class App:
         self.full_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(sort, text="Перепроверить уже разобранные", variable=self.full_var).grid(
             row=0, column=2, columnspan=2, sticky="w", **pad)
-        self.by_month_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(sort, text="Внутри категорий сохранять папки год/месяц",
-                        variable=self.by_month_var, command=self.toggle_by_month).grid(
-            row=2, column=0, columnspan=3, sticky="w", **pad)
-
-        self.buttons: list[ttk.Button] = []
-
-        def button(parent, text, command, row, col):
-            b = ttk.Button(parent, text=text, command=command)
-            b.grid(row=row, column=col, sticky="ew", **pad)
-            self.buttons.append(b)
-            return b
-
-        for col in range(4):
-            sort.columnconfigure(col, weight=1)
         button(sort, "Пробный прогон", self.do_plan, 1, 0)
         button(sort, "Разложить", self.do_sort, 1, 1)
         button(sort, "Только сканировать", self.do_scan, 1, 2)
         button(sort, "Открыть результат", lambda: self.open_folder("target"), 1, 3)
+        self.by_month_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(sort, text="Внутри категорий сохранять папки год/месяц",
+                        variable=self.by_month_var, command=self.toggle_by_month).grid(
+            row=2, column=0, columnspan=2, sticky="w", **pad)
+        button(sort, "Проверка на дубли в конечной папке", self.do_dupes_target, 2, 2)
         button(sort, "Пересчитать категории", self.do_recategorize, 2, 3)
 
-        other = ttk.LabelFrame(main, text="Дубли, отчёт, журнал", padding=8)
-        other.grid(row=2, column=0, sticky="ew", pady=(0, 8))
-        for col in range(4):
-            other.columnconfigure(col, weight=1)
-        button(other, "Показать дубли", lambda: self.do_dupes(False), 0, 0)
-        button(other, "Только дубли (вся библиотека)", lambda: self.do_dupes(True), 0, 1)
-        button(other, "Сделать отчёт", self.do_report, 0, 2)
-        button(other, "История переносов", self.do_history, 0, 3)
-        button(other, "Откатить последний перенос", self.do_undo, 1, 0)
-        button(other, "Настройки…", lambda: open_path(self.config_path), 1, 1)
-        button(other, "Списки тегов…", lambda: open_path(self.folder / "rules"), 1, 2)
-        button(other, "Перечитать настройки", self.reload_config, 1, 3)
-        button(other, "Проверить обновления", lambda: self.check_updates(manual=True), 2, 0)
-        button(other, "Удалить программу…", self.uninstall, 2, 1)
-        button(other, "Дубли в другой папке…", self.do_dupes_folder, 2, 2)
+        dupes = block("Дубли", 2, 4)
+        self.dupes_var = tk.StringVar()
+        folder_row(dupes, 0, "Где искать дубли:", self.dupes_var, self.choose_dupes_folder)
+        button(dupes, "Проверка на дубли", self.do_dupes_folder, 1, 0)
+        button(dupes, "Отчёт по дублям", self.do_dupes_report, 1, 1)
+        button(dupes, "Откат удаления дублей", self.do_undo_trash, 1, 2)
+        button(dupes, "Открыть папку", lambda: self.open_folder("dupes"), 1, 3)
+
+        report = block("Отчёт", 3, 3)
+        button(report, "Сделать отчёт", self.do_report, 0, 0)
+        button(report, "История переносов", self.do_history, 0, 1)
+        button(report, "Откатить последний перенос", self.do_undo, 0, 2)
+
+        program = block("Программа", 4, 5)
+        button(program, "Настройки…", self.open_settings, 0, 0)
+        button(program, "Категории и теги…", self.open_categories, 0, 1)
+        button(program, "Перечитать настройки", self.reload_config, 0, 2)
+        button(program, "Проверить обновления", lambda: self.check_updates(manual=True), 0, 3)
+        button(program, "Удалить программу…", self.uninstall, 0, 4)
 
         status = ttk.Frame(main)
-        status.grid(row=3, column=0, sticky="ew", pady=(0, 4))
+        status.grid(row=5, column=0, sticky="ew", pady=(0, 4))
         status.columnconfigure(0, weight=1)
         self.status_var = tk.StringVar(value="Готово")
         ttk.Label(status, textvariable=self.status_var).grid(row=0, column=0, sticky="w")
@@ -143,9 +153,9 @@ class App:
         self.progress.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(4, 0))
 
         log_frame = ttk.Frame(main)
-        log_frame.grid(row=4, column=0, sticky="nsew")
-        main.rowconfigure(4, weight=1)
-        self.log_text = tk.Text(log_frame, height=12, wrap="word", state="disabled")
+        log_frame.grid(row=6, column=0, sticky="nsew")
+        main.rowconfigure(6, weight=1)
+        self.log_text = tk.Text(log_frame, height=8, wrap="word", state="disabled")
         scroll = ttk.Scrollbar(log_frame, command=self.log_text.yview)
         self.log_text.configure(yscrollcommand=scroll.set)
         self.log_text.pack(side="left", fill="both", expand=True)
@@ -239,6 +249,7 @@ class App:
             self._tagger_key = tagger_key
         self.source_var.set(str(cfg.source))
         self.target_var.set(str(cfg.target))
+        self.dupes_var.set(str(cfg.dupes_folder) if cfg.dupes_folder else "(не выбрана)")
         self.by_month_var.set(cfg.by_month)
         if cfg.source != self._months_source:
             self._months_source = cfg.source
@@ -273,11 +284,33 @@ class App:
         set_setting(self.config_path, "layout", "by_month", "true" if self.by_month_var.get() else "false")
         self.reload_config()
 
+    def choose_dupes_folder(self) -> None:
+        current = self.cfg.dupes_folder if self.cfg else None
+        folder = filedialog.askdirectory(parent=self.root, mustexist=True, title="В какой папке искать дубли?",
+                                         initialdir=str(current if current and current.is_dir() else Path.home()))
+        if folder:
+            set_setting(self.config_path, "dupes", "folder", toml_value(Path(folder).as_posix()))
+            self.reload_config()
+
+    def open_settings(self) -> None:
+        if self.busy:
+            messagebox.showinfo("Autosort", "Дождитесь окончания задачи или остановите её.", parent=self.root)
+        elif self.reload_config():
+            SettingsWindow(self)
+
+    def open_categories(self) -> None:
+        if self.busy:
+            messagebox.showinfo("Autosort", "Дождитесь окончания задачи или остановите её.", parent=self.root)
+        elif self.reload_config():
+            CategoriesWindow(self)
+
     def open_folder(self, key: str) -> None:
         if self.cfg is None:
             return
-        folder = self.cfg.source if key == "source" else self.cfg.target
-        if folder.exists():
+        folder = {"source": self.cfg.source, "target": self.cfg.target, "dupes": self.cfg.dupes_folder}[key]
+        if folder is None:
+            messagebox.showinfo("Autosort", "Сначала выберите папку кнопкой «Выбрать…».")
+        elif folder.exists():
             open_path(folder)
         else:
             messagebox.showinfo("Autosort", "Папки пока нет: в ней ещё ничего не разложено.")
@@ -374,15 +407,14 @@ class App:
                 pipe.apply(plan)
         self.run_task("Пересчёт категорий", job, need_source=False)
 
-    def do_dupes(self, whole_library: bool, folder: Path | None = None) -> None:
+    def do_dupes(self, folder: Path) -> None:
+        """Отпечатки всех файлов папки и окно разбора дублей в браузере."""
         def job(cfg, db):
             from .review import create_server
 
-            roots = [folder] if folder else None
-            if whole_library or folder:
-                n = self.pipeline(cfg, db).hash_library(roots)
-                self.log(f"Новых отпечатков: {n}")
-            created = create_server(cfg, db, log=self.log, roots=roots)
+            n = self.pipeline(cfg, db).hash_library([folder])
+            self.log(f"Новых отпечатков: {n}")
+            created = create_server(cfg, db, log=self.log, roots=[folder])
             if created is None:
                 return
             self.server, url = created
@@ -393,18 +425,54 @@ class App:
                 self.server.serve_forever()
             finally:
                 self.server.server_close()
-        title = f"Дубли в {folder}" if folder else "Только дубли" if whole_library else "Поиск дублей"
-        self.run_task(title, job, need_source=whole_library)
+        self.run_task(f"Дубли в {folder}", job, need_source=False)
+
+    def _dupes_folder(self) -> Path | None:
+        if not self.reload_config():
+            return None
+        folder = self.cfg.dupes_folder
+        if folder is None or not folder.is_dir():
+            messagebox.showwarning("Autosort", "Сначала выберите папку в блоке «Дубли» кнопкой «Выбрать…».")
+            return None
+        return folder
 
     def do_dupes_folder(self) -> None:
-        if self.busy:
+        if not self.busy and (folder := self._dupes_folder()):
+            self.do_dupes(folder)
+
+    def do_dupes_target(self) -> None:
+        if self.busy or not self.reload_config():
             return
-        chosen = filedialog.askdirectory(title="В какой папке искать дубли?", parent=self.root,
-                                         initialdir=self._dupes_folder or str(Path.home()), mustexist=True)
-        if not chosen:
+        if not self.cfg.target.is_dir():
+            messagebox.showinfo("Autosort", "В папке «Куда раскладывать» пока ничего нет.")
             return
-        self._dupes_folder = chosen
-        self.do_dupes(False, Path(chosen))
+        self.do_dupes(self.cfg.target)
+
+    def do_dupes_report(self) -> None:
+        if self.busy or not (folder := self._dupes_folder()):
+            return
+
+        def job(cfg, db):
+            from .dupes import dupes_report, find_groups
+
+            self.pipeline(cfg, db).hash_library([folder])
+            groups = find_groups(db, cfg.phash_distance, [folder])
+            out = cfg.base_dir / "dupes_report.txt"
+            out.write_text(dupes_report(db, groups, folder), encoding="utf-8")
+            self.log(f"Групп дублей: {len(groups)}. Отчёт: {out}")
+            self.events.put(("open", out))
+        self.run_task("Отчёт по дублям", job, need_source=False)
+
+    def do_undo_trash(self) -> None:
+        def job(cfg, db):
+            from .dupes import undo_trash
+
+            batch = db.last_trash_batch()
+            if batch is None:
+                self.log("Удалений дублей в журнале нет.")
+            elif self.ask(f"Вернуть из корзины файлы, удалённые при разборе дублей №{batch}?"):
+                undo_trash(db, batch, cfg.target, self.log)
+        self.run_task("Откат удаления дублей", job, need_source=False)
 
     def do_report(self) -> None:
         def job(cfg, db):

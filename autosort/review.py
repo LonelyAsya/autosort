@@ -22,6 +22,7 @@ class ReviewState:
         self.db = db
         self.log = log
         self.roots = roots
+        self.batch: int | None = None  # все удаления одного разбора — одна запись в журнале
         self.groups: dict[str, Group] = {}
         self.refresh()
 
@@ -42,10 +43,14 @@ class ReviewState:
         return out
 
     def resolve(self, key: str, keep: list[int]) -> int:
-        g = self.groups.pop(key, None)
-        if g is None:
+        g = self.groups.get(key)
+        keep = [i for i in keep if g is not None and i in g.ids]
+        if g is None or not keep:  # хотя бы один файл из группы всегда остаётся
             return 0
-        return trash_files(self.db, [i for i in g.ids if i not in keep], self.log)
+        del self.groups[key]
+        if self.batch is None:
+            self.batch = self.db.new_batch()
+        return trash_files(self.db, [i for i in g.ids if i not in keep], self.log, self.batch)
 
     def ignore(self, key: str) -> None:
         if self.groups.pop(key, None):

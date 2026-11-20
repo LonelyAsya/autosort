@@ -66,6 +66,46 @@ def set_setting(config: Path, section: str, key: str, value: str) -> None:
     config.write_text(text, encoding="utf-8")
 
 
+def toml_value(value) -> str:
+    """Значение Python → строка TOML для set_setting."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return repr(value)
+    return '"' + str(value).replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+_CATEGORY_BLOCK = re.compile(r"^\[\[categories\.list\]\][ \t]*\n(?:(?!^\[).*\n?)*", re.MULTILINE)
+
+
+def save_categories(config: Path, default: str, categories: list[tuple[str, str]]) -> None:
+    """Переписывает список категорий (имя, файл тегов) в config.toml по порядку приоритета.
+
+    Остальной файл и комментарии не трогаются."""
+    text = config.read_text(encoding="utf-8")
+    blocks = "".join(f"[[categories.list]]\nname = {toml_value(n)}\ntags_file = {toml_value(f)}\n\n"
+                     for n, f in categories)
+    first = _CATEGORY_BLOCK.search(text)
+    if first:
+        start = first.start()
+        text = _CATEGORY_BLOCK.sub("", text)
+        text = text[:start] + blocks + text[start:]
+    else:
+        section = re.search(r"^\[categories\][ \t]*\n(?:(?!^\[).*\n?)*", text, re.MULTILINE)
+        if section:
+            text = text[:section.end()] + ("\n" if not text[:section.end()].endswith("\n\n") else "") \
+                + blocks + text[section.end():]
+        else:
+            text = text.rstrip("\n") + "\n\n[categories]\n\n" + blocks
+    config.write_text(text, encoding="utf-8")
+    set_setting(config, "categories", "default", toml_value(default))
+
+
+def safe_file_name(name: str) -> str:
+    cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', "_", name).strip(" .")
+    return cleaned or "category"
+
+
 def set_path_setting(config: Path, key: str, value: str) -> None:
     set_setting(config, "paths", key, _toml_string(value))
 

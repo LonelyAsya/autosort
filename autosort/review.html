@@ -31,22 +31,26 @@
   .group-head { display: flex; justify-content: space-between; align-items: center; gap: 8px;
                 margin-bottom: 10px; color: var(--muted); flex-wrap: wrap; }
   .items { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
-  .item { border: 2px solid transparent; border-radius: 10px; padding: 6px; }
-  .item.keep { border-color: var(--keep); }
+  .item { border: 2px solid var(--line); border-radius: 10px; padding: 6px; opacity: .75; }
+  .item.keep { border-color: var(--keep); opacity: 1; }
+  .item label { display: flex; gap: 6px; align-items: center; margin-top: 6px; cursor: pointer;
+                font-weight: 600; user-select: none; }
+  .item input { width: 18px; height: 18px; accent-color: var(--keep); }
+  .hint { font-size: 13px; color: var(--muted); }
+  .actions { display: flex; gap: 8px; flex-wrap: wrap; }
   .item img { width: 100%; aspect-ratio: 1; object-fit: contain; background: var(--bg);
               border-radius: 6px; display: block; cursor: zoom-in; }
-  .badge { display: inline-block; font-size: 12px; color: #fff; background: var(--keep);
-           border-radius: 6px; padding: 1px 6px; margin: 6px 0 2px; }
+  .badge { display: inline-block; font-size: 12px; color: var(--keep); border: 1px solid var(--keep);
+           border-radius: 6px; padding: 0 6px; margin: 4px 0 2px; }
   .meta { font-size: 13px; color: var(--muted); word-break: break-all; }
   .meta b { color: var(--text); font-weight: 600; }
-  .item button { width: 100%; margin-top: 6px; }
   .empty { text-align: center; color: var(--muted); padding: 60px 0; }
 </style>
 </head>
 <body>
 <header>
   <h1>Дубли</h1>
-  <button class="danger" id="all">Удалить лишнее во всех группах</button>
+  <button class="danger" id="all">Применить отметки во всех группах</button>
   <button id="quit">Закончить</button>
   <div id="summary"></div>
 </header>
@@ -65,11 +69,16 @@ async function post(url, data) {
   return r.json();
 }
 
+// Какие файлы оставить в каждой группе: по умолчанию — подсказанный.
+const keepSets = new Map();
+const keepOf = g => keepSets.get(g.key) || keepSets.set(g.key, new Set([g.keep])).get(g.key);
+
 function summary() {
-  const extra = groups.reduce((s, g) => s + g.items.filter(i => i.id !== g.keep)
+  const extra = groups.reduce((s, g) => s + g.items.filter(i => !keepOf(g).has(i.id))
                                              .reduce((a, i) => a + (i.size || 0), 0), 0);
   $("#summary").textContent = groups.length
-    ? `Групп: ${groups.length}. Если оставить подсказанные файлы, освободится ${fmtSize(extra)}. Удалённое уходит в корзину.`
+    ? `Групп: ${groups.length}. Отметьте галочкой файлы, которые нужно оставить (можно несколько). ` +
+      `С текущими отметками освободится ${fmtSize(extra)}. Удалённое уходит в корзину, его можно вернуть кнопкой «Откат» в программе.`
     : "";
 }
 
@@ -81,30 +90,49 @@ function render() {
     $("#all").disabled = true;
   }
   for (const g of groups) {
+    const keep = keepOf(g);
     const el = document.createElement("section");
     el.className = "group";
-    el.innerHTML = `<div class="group-head"><span>${g.exact ? "Точные копии" : "Похожие"} · ${g.items.length} шт.</span></div>`;
+    el.innerHTML = `<div class="group-head"><span>${g.exact ? "Точные копии" : "Похожие"} · ${g.items.length} шт.</span>
+      <div class="actions"></div></div>`;
+    const actions = el.querySelector(".actions");
+    const apply = document.createElement("button");
+    apply.className = "primary";
+    const updateApply = () => {
+      const n = keep.size, del = g.items.length - n;
+      apply.textContent = del ? `Оставить отмеченные (${n}), удалить ${del}` : "Отмечены все — нечего удалять";
+      apply.disabled = !n || !del;
+    };
+    apply.onclick = async () => {
+      await post("/api/resolve", { key: g.key, keep: [...keep] });
+      drop(g);
+    };
     const keepAll = document.createElement("button");
-    keepAll.textContent = "Оставить все";
+    keepAll.textContent = "Оставить все, это не дубли";
     keepAll.onclick = async () => { await post("/api/ignore", { key: g.key }); drop(g); };
-    el.firstChild.append(keepAll);
+    actions.append(apply, keepAll);
+
     const items = document.createElement("div");
     items.className = "items";
     for (const it of g.items) {
       const card = document.createElement("div");
-      card.className = "item" + (it.id === g.keep ? " keep" : "");
+      card.className = "item" + (keep.has(it.id) ? " keep" : "");
       card.innerHTML = `
         <img loading="lazy" src="/thumb/${it.id}" alt="">
         ${it.id === g.keep ? '<span class="badge">Советуем оставить</span>' : ""}
         <div class="meta"><b>${it.width || "?"}×${it.height || "?"}</b> · ${fmtSize(it.size || 0)} · ${esc(it.date.slice(0, 10))}</div>
-        <div class="meta" title="${esc(it.path)}">${esc(it.name)}</div>`;
+        <div class="meta" title="${esc(it.path)}">${esc(it.name)}</div>
+        <label><input type="checkbox" ${keep.has(it.id) ? "checked" : ""}> Оставить</label>`;
       card.querySelector("img").onclick = () => window.open(`/file/${it.id}`, "_blank");
-      const btn = document.createElement("button");
-      btn.textContent = "Оставить эту";
-      btn.onclick = async () => { await post("/api/resolve", { key: g.key, keep: [it.id] }); drop(g); };
-      card.append(btn);
+      card.querySelector("input").onchange = e => {
+        e.target.checked ? keep.add(it.id) : keep.delete(it.id);
+        card.classList.toggle("keep", e.target.checked);
+        updateApply();
+        summary();
+      };
       items.append(card);
     }
+    updateApply();
     el.append(items);
     list.append(el);
   }
@@ -117,11 +145,15 @@ function drop(g) {
 }
 
 $("#all").onclick = async () => {
-  if (!confirm(`Во всех ${groups.length} группах оставить подсказанный файл, а остальные отправить в корзину?`)) return;
-  const r = await post("/api/resolve_all");
-  groups = [];
+  if (!confirm(`Во всех ${groups.length} группах оставить отмеченные файлы, а остальные отправить в корзину?`)) return;
+  let trashed = 0;
+  for (const g of [...groups]) {
+    const keep = keepOf(g);
+    if (keep.size && keep.size < g.items.length) trashed += (await post("/api/resolve", { key: g.key, keep: [...keep] })).trashed;
+  }
+  groups = groups.filter(g => keepOf(g).size === g.items.length || !keepOf(g).size);
   render();
-  alert(`В корзину отправлено файлов: ${r.trashed}`);
+  alert(`В корзину отправлено файлов: ${trashed}`);
 };
 
 $("#quit").onclick = async () => {

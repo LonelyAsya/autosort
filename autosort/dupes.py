@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -134,11 +135,13 @@ def reclaimable_bytes(db: Database, groups: list[Group]) -> int:
     return total
 
 
-def trash_files(db: Database, ids: list[int], log=print) -> int:
-    """Отправляет файлы в корзину (не удаляет навсегда) и пишет это в журнал."""
+def trash_files(db: Database, ids: list[int], log=print, batch: int | None = None) -> int:
+    """Отправляет файлы в корзину (не удаляет навсегда) и пишет это в журнал.
+
+    batch — номер записи в журнале: все удаления одного разбора дублей откатываются вместе."""
     from send2trash import send2trash
 
-    batch = db.new_batch()
+    batch = batch or db.new_batch()
     count = 0
     for i in ids:
         row = db.get(i)
@@ -154,3 +157,103 @@ def trash_files(db: Database, ids: list[int], log=print) -> int:
         db.journal_state(move_id, "done")
         count += 1
     return count
+
+
+# Восстановление из корзины Windows через оболочку: у каждого удалённого файла корзина помнит,
+# откуда он удалён. Глагол «undelete» возвращает файл на место под прежним именем.
+_RESTORE_PS = r"""
+param([string]$In, [string]$Out)
+$ErrorActionPreference = 'Stop'
+$want = Get-Content -Raw -Encoding UTF8 -LiteralPath $In | ConvertFrom-Json
+$shell = New-Object -ComObject Shell.Application
+$bin = $shell.NameSpace(10)
+$items = @($bin.Items())
+$result = @{}
+foreach ($w in $want) {
+  $dir = [IO.Path]::GetDirectoryName($w.path)
+  $name = [IO.Path]::GetFileName($w.path)
+  $stem = [IO.Path]::GetFileNameWithoutExtension($w.path)
+  $found = $items | Where-Object {
+      $_.ExtendedProperty('System.Recycle.DeletedFrom') -eq $dir -and
+      ($_.Name -eq $name -or ($_.Name -eq $stem -and ($w.size -eq $null -or $_.Size -eq $w.size)))
+    } | Sort-Object { $_.ExtendedProperty('System.Recycle.DateDeleted') } -Descending | Select-Object -First 1
+  if ($found -and -not (Test-Path -LiteralPath $w.path)) {
+    try { $found.InvokeVerb('undelete') } catch {}
+    for ($i = 0; $i -lt 20 -and -not (Test-Path -LiteralPath $w.path); $i++) { Start-Sleep -Milliseconds 250 }
+    if (-not (Test-Path -LiteralPath $w.path)) {
+      try { $shell.NameSpace($dir).MoveHere($found, 0x14) } catch {}
+      for ($i = 0; $i -lt 20 -and -not (Test-Path -LiteralPath $w.path); $i++) { Start-Sleep -Milliseconds 250 }
+    }
+  }
+  $result[$w.path] = [bool](Test-Path -LiteralPath $w.path)
+}
+$result | ConvertTo-Json -Compress | Set-Content -Encoding UTF8 -LiteralPath $Out
+"""
+
+
+def restore_from_trash(files: list[tuple[Path, int | None]]) -> dict[str, bool]:
+    """Возвращает файлы из корзины Windows на прежние места. Ответ: путь → получилось ли."""
+    if sys.platform != "win32" or not files:
+        return {str(p): p.exists() for p, _ in files}
+    import json
+    import subprocess
+    import tempfile
+
+    from .media import NO_WINDOW
+
+    with tempfile.TemporaryDirectory() as tmp:
+        script, src, out = Path(tmp, "restore.ps1"), Path(tmp, "in.json"), Path(tmp, "out.json")
+        script.write_text(_RESTORE_PS, encoding="utf-8-sig")
+        src.write_text(json.dumps([{"path": str(p), "size": size} for p, size in files], ensure_ascii=False),
+                       encoding="utf-8")
+        subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script),
+                        "-In", str(src), "-Out", str(out)], capture_output=True, timeout=600, **NO_WINDOW)
+        if not out.exists():
+            return {str(p): p.exists() for p, _ in files}
+        data = json.loads(out.read_text(encoding="utf-8-sig") or "{}")
+    return {str(p): bool(data.get(str(p), p.exists())) for p, _ in files}
+
+
+def undo_trash(db: Database, batch: int, target: Path | None = None, log=print,
+               restore=restore_from_trash) -> int:
+    """Откат удаления дублей: файлы из этой записи журнала возвращаются из корзины."""
+    moves = [m for m in db.moves_of(batch) if m["action"] == "trash" and m["state"] == "done"]
+    if not moves:
+        log("Откатывать нечего.")
+        return 0
+    rows = {m["id"]: db.get(m["file_id"]) for m in moves}
+    result = restore([(Path(m["src"]), rows[m["id"]]["size"] if rows[m["id"]] else None) for m in moves])
+    restored = 0
+    for m in moves:
+        if not result.get(m["src"]):
+            continue
+        row = rows[m["id"]]
+        src = Path(m["src"])
+        in_target = target is not None and (target in src.parents)
+        status = "moved" if in_target else ("analyzed" if row and row["type"] else "hashed")
+        db.set_status(m["file_id"], status)
+        db.journal_state(m["id"], "undone")
+        restored += 1
+    missing = len(moves) - restored
+    log(f"Возвращено из корзины: {restored} (удаление №{batch})")
+    if missing:
+        log(f"Не нашлось в корзине: {missing}. Если корзину очищали, файлы уже не вернуть; "
+            "файлы из OneDrive можно поискать в корзине на onedrive.live.com.")
+    return restored
+
+
+def dupes_report(db: Database, groups: list[Group], folder: Path) -> str:
+    exact = sum(g.exact for g in groups)
+    lines = [f"Дубли в папке {folder}", "",
+             f"Групп: {len(groups)} (точных копий: {exact}, похожих: {len(groups) - exact})",
+             f"Лишних файлов: {sum(len(g.ids) - 1 for g in groups)}",
+             f"Можно освободить: {reclaimable_bytes(db, groups) / 1024**2:.1f} МБ",
+             "", "«*» — файл, который советуем оставить (больше разрешение, потом размер, потом старше).", ""]
+    for n, g in enumerate(groups, 1):
+        lines.append(f"{n}. {'Точные копии' if g.exact else 'Похожие'}, {len(g.ids)} шт.")
+        for i in g.ids:
+            r = db.get(i)
+            mark = "*" if i == g.keep else " "
+            lines.append(f"  {mark} {r['width'] or '?'}×{r['height'] or '?'}  {(r['size'] or 0) / 1024**2:6.1f} МБ  {r['path']}")
+        lines.append("")
+    return "\n".join(lines)

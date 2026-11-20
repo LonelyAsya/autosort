@@ -157,6 +157,11 @@ class Database:
     def moves_of(self, batch: int) -> list[sqlite3.Row]:
         return self.conn.execute("SELECT * FROM moves WHERE batch = ? ORDER BY id DESC", (batch,)).fetchall()
 
+    def last_trash_batch(self) -> int | None:
+        row = self.conn.execute(
+            "SELECT MAX(batch) FROM moves WHERE action = 'trash' AND state = 'done'").fetchone()
+        return row[0]
+
     def last_move_batch(self) -> int | None:
         row = self.conn.execute(
             "SELECT MAX(batch) FROM moves WHERE action = 'move' AND state = 'done'").fetchone()
