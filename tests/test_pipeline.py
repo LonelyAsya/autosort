@@ -531,3 +531,31 @@ def test_many_refused_files_wake_onedrive(cfg, db, monkeypatch):
     with pytest.raises(CloudUnavailable):
         pipe.scan()
     assert pipe.errors == 1  # первый файл пропущен, на втором подряд — остановка
+
+
+def test_move_avoids_path_of_trashed_duplicate(cfg, db):
+    make_library(cfg)
+    pipe = Pipeline(cfg, db, tagger(), progress=False)
+    plan = pipe.scan()
+    first = plan[0]
+    # дубль с таким же путём раньше удалили в корзину: файла нет, а запись в базе осталась
+    db.save_file(first.dst, size=1, mtime=0, status="trashed")
+    pipe.apply(plan)
+    row = db.get_by_path(first.dst.with_name(f"{first.dst.stem} (1){first.dst.suffix}"))
+    assert row is not None and row["id"] == first.file_id and row["status"] == "moved"
+    assert db.get_by_path(first.dst)["status"] == "trashed"
+
+
+def test_interrupted_move_is_written_to_db(cfg, db):
+    import shutil
+
+    make_library(cfg)
+    pipe = Pipeline(cfg, db, tagger(), progress=False)
+    m = pipe.scan()[0]
+    batch = db.new_batch()
+    db.journal(batch, m.file_id, "move", m.src, m.dst)
+    m.dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(m.src), str(m.dst))  # файл перенесён, а запись в базу сорвалась
+    assert pipe.finish_interrupted_moves() == 1
+    assert db.get_by_path(m.dst)["id"] == m.file_id
+    assert pipe.undo(batch) == 1 and m.src.exists()

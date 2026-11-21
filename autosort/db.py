@@ -119,6 +119,21 @@ class Database:
             self.conn.execute("UPDATE files SET path = ?, status = ?, updated_at = ? WHERE id = ?",
                               (str(path), status, now(), file_id))
 
+    def path_taken(self, path: Path | str, file_id: int | None = None) -> bool:
+        """Путь уже записан за другим файлом базы (например, за дублем, удалённым в корзину)."""
+        row = self.conn.execute("SELECT id FROM files WHERE path = ? AND id IS NOT ?",
+                                (str(path), file_id)).fetchone()
+        return row is not None
+
+    def pending_moves(self) -> list[sqlite3.Row]:
+        """Переносы, прерванные между перемещением файла и записью в базу."""
+        return self.conn.execute(
+            "SELECT * FROM moves WHERE action = 'move' AND state = 'pending' ORDER BY id").fetchall()
+
+    def set_move_dst(self, move_id: int, dst: Path | str) -> None:
+        with self.conn:
+            self.conn.execute("UPDATE moves SET dst = ? WHERE id = ?", (str(dst), move_id))
+
     def set_status(self, file_id: int, status: str) -> None:
         with self.conn:
             self.conn.execute("UPDATE files SET status = ?, updated_at = ? WHERE id = ?", (status, now(), file_id))

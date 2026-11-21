@@ -317,12 +317,41 @@ class Pipeline:
         self.log(f"Перенесено файлов: {done}. Номер переноса для отката: {batch}")
         return batch
 
+    def _free_target(self, path: Path, file_id: int) -> Path:
+        """Имя, не занятое ни на диске, ни в базе (там остаются пути дублей, удалённых в корзину)."""
+        candidate, i = path, 1
+        while candidate.exists() or self.db.path_taken(candidate, file_id):
+            candidate = path.with_name(f"{path.stem} ({i}){path.suffix}")
+            i += 1
+        return candidate
+
+    def finish_interrupted_moves(self) -> int:
+        """Файл перенесён, но запись в базу сорвалась: дописываем, чтобы откат и отчёты его видели."""
+        fixed = 0
+        for m in self.db.pending_moves():
+            src, dst = Path(m["src"]), Path(m["dst"])
+            if dst.exists() and not src.exists():
+                if self.db.path_taken(dst, m["file_id"]):
+                    free = self._free_target(dst, m["file_id"])
+                    dst.rename(free)
+                    dst = free
+                    self.db.set_move_dst(m["id"], dst)
+                self.db.set_location(m["file_id"], dst, "moved")
+                self.db.journal_state(m["id"], "done")
+                fixed += 1
+            else:
+                self.db.journal_state(m["id"], "failed")
+        if fixed:
+            self.log(f"Дописал в базу прерванные переносы: {fixed}")
+        return fixed
+
     def _move(self, plan: list[PlannedMove], batch: int, hydration: Hydration | None = None) -> int:
         done = 0
+        self.finish_interrupted_moves()
         for m in self._iter(plan, "Перенос"):
             if not m.src.exists():
                 continue
-            dst = unique_path(m.dst, set()) if m.dst.exists() else m.dst
+            dst = self._free_target(m.dst, m.file_id)
             move_id = self.db.journal(batch, m.file_id, "move", m.src, dst)
             try:
                 size = m.src.stat().st_size
@@ -354,6 +383,9 @@ class Pipeline:
             src, dst = Path(m["src"]), Path(m["dst"])
             if not dst.exists() or src.exists():
                 self.log(f"Пропуск (файл изменён вручную): {dst}")
+                continue
+            if self.db.path_taken(src, m["file_id"]):
+                self.log(f"Пропуск (на старом месте в базе уже другой файл): {src}")
                 continue
             src.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(str(dst), str(src))
