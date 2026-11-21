@@ -559,3 +559,19 @@ def test_interrupted_move_is_written_to_db(cfg, db):
     assert pipe.finish_interrupted_moves() == 1
     assert db.get_by_path(m.dst)["id"] == m.file_id
     assert pipe.undo(batch) == 1 and m.src.exists()
+
+
+def test_changed_mtime_does_not_reanalyze(cfg, db):
+    import os
+
+    month = make_library(cfg)
+    pipe = Pipeline(cfg, db, tagger(), progress=False)
+    pipe.scan()
+    for f in month.iterdir():  # OneDrive переустановили — даты файлов чуть сдвинулись
+        st = f.stat()
+        os.utime(f, (st.st_atime, int(st.st_mtime) + 0.5))
+    calls = []
+    real = pipe.analyzer.analyze
+    pipe.analyzer.analyze = lambda path: calls.append(path) or real(path)
+    pipe.scan()
+    assert calls == []

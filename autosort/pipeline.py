@@ -200,10 +200,11 @@ class Pipeline:
         return plan
 
     def _scan_file(self, path: Path, month: str, full: bool, hydration: Hydration) -> int | None:
+        # Уже разобранный файл узнаём по пути и размеру. Дату изменения не сравниваем: после
+        # переустановки или сброса OneDrive она меняется в долях секунды, и всё скачивалось бы заново.
         st = path.stat()
         row = self.db.get_by_path(path)
-        if (row is not None and not full and row["status"] == "analyzed"
-                and row["size"] == st.st_size and row["mtime"] == st.st_mtime):
+        if row is not None and not full and row["status"] == "analyzed" and row["size"] == st.st_size:
             return row["id"]
         downloaded = hydration.before_read(path, st.st_size)
         try:
@@ -466,7 +467,7 @@ class Pipeline:
     def _hash_file(self, path: Path, hydration: Hydration) -> int:
         st = path.stat()
         row = self.db.get_by_path(path)
-        if row is not None and row["sha256"] and row["size"] == st.st_size and row["mtime"] == st.st_mtime:
+        if row is not None and row["sha256"] and row["size"] == st.st_size:
             return 0
         downloaded = hydration.before_read(path, st.st_size)
         try:
