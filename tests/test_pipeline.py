@@ -479,3 +479,55 @@ def test_similarity_percent(cfg, db):
     assert similarity_percent(a, {"sha256": "2", "phash": "0000000000000000"}) == 0
     assert similarity_percent(a, {"sha256": "1", "phash": None}) == 100
     assert similarity_percent(a, {"sha256": "2", "phash": "ff,ff"}) is None  # картинка и видео
+
+
+def test_file_refused_by_onedrive_is_skipped_without_retries(cfg, db, monkeypatch):
+    import autosort.pipeline as pipeline_mod
+    from autosort.onedrive import CloudFileRefused
+
+    make_library(cfg)
+    pipe = Pipeline(cfg, db, tagger(), progress=False)
+    sleeps = []
+    pipe._sleep = sleeps.append
+    real = pipe.analyzer.analyze
+    calls = []
+
+    def refused(path):
+        if path.name == "small.jpg":
+            calls.append(path.name)
+            raise OSError(22, "Invalid argument")
+        return real(path)
+
+    def diagnose(path, error):
+        raise CloudFileRefused("OneDrive не отдал файл (код Windows 380)")
+
+    pipe.analyzer.analyze = refused
+    monkeypatch.setattr(pipeline_mod, "explain_read_error", diagnose)
+    plan = pipe.scan()
+    assert calls == ["small.jpg"] and sleeps == []  # ни повторов, ни ожиданий
+    assert "copy.png" in {m.src.name for m in plan}
+    row = db.get_by_path(cfg.source / "2024-05" / "small.jpg")
+    assert row["status"] == "error" and "380" in row["error"]
+
+
+def test_many_refused_files_wake_onedrive(cfg, db, monkeypatch):
+    import autosort.pipeline as pipeline_mod
+    from autosort.onedrive import CloudFileRefused, CloudUnavailable
+
+    make_library(cfg)
+    pipe = Pipeline(cfg, db, tagger(), progress=False)
+    pipe._sleep = lambda seconds: None
+    pipe.refused_limit = 2
+    pipe.max_revivals = 0  # разбудить не получилось — останавливаемся
+
+    def refused(path):
+        raise OSError(22, "Invalid argument")
+
+    def diagnose(path, error):
+        raise CloudFileRefused("OneDrive не отдал файл (код Windows 380)")
+
+    pipe.analyzer.analyze = refused
+    monkeypatch.setattr(pipeline_mod, "explain_read_error", diagnose)
+    with pytest.raises(CloudUnavailable):
+        pipe.scan()
+    assert pipe.errors == 1  # первый файл пропущен, на втором подряд — остановка

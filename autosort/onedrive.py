@@ -36,8 +36,19 @@ _PROVIDER_DOWN = {
 }
 
 
+# OneDrive отказался отдать конкретный файл. Повторы через 5 и 30 с тут не помогают,
+# поэтому файл сразу пропускается и попадает в ошибки (при следующем запуске пробуется снова).
+_FILE_REFUSED = {
+    380,  # ERROR_CLOUD_FILE_INVALID_REQUEST — «Недопустимая операция с облаком»
+}
+
+
 class CloudUnavailable(Exception):
     """OneDrive не отдаёт файлы — дальше обрабатывать бессмысленно."""
+
+
+class CloudFileRefused(Exception):
+    """OneDrive не отдаёт именно этот файл — пропускаем его без повторов."""
 
 
 def windows_read_error(path: Path) -> tuple[int, str] | None:
@@ -88,6 +99,10 @@ def explain_read_error(path: Path, error: Exception) -> str:
             "Что сделать: щёлкните значок OneDrive в трее — если синхронизация на паузе, возобновите её "
             "и проверьте, нет ли там ошибок. Если OneDrive продолжает закрываться сам, перезапустите компьютер. "
             "Затем запустите разбор снова — уже разобранное пропустится.")
+    if code in _FILE_REFUSED:
+        raise CloudFileRefused(
+            f"OneDrive не отдал файл: «{text}» (код Windows {code}). Пропускаю его, при следующем запуске "
+            "попробую снова. Если ошибка повторяется, откройте файл в проводнике или на onedrive.live.com")
     return f"{text} (код Windows {code})"
 
 

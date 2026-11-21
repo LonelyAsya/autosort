@@ -18,7 +18,7 @@ from .config import Config
 from .db import Database
 from .media import is_media
 from .speed import DOWNLOAD, FILES, MOVE, Speedometer
-from .onedrive import CloudUnavailable, Hydration, explain_read_error, onedrive_running, start_onedrive
+from .onedrive import CloudFileRefused, CloudUnavailable, Hydration, explain_read_error, onedrive_running, start_onedrive
 
 
 class Stopped(Exception):
@@ -115,6 +115,8 @@ class Pipeline:
         self.revive_settle = 30.0
         self.max_revivals = 5  # подряд, без единого удачно прочитанного файла между ними
         self.revivals = 0
+        self.refused_limit = 10  # столько файлов подряд OneDrive отказался отдать — будим его самого
+        self.refused_streak = 0
         self.errors = 0
         sauce = None
         if cfg.saucenao_enabled and cfg.saucenao_api_key:
@@ -246,10 +248,19 @@ class Pipeline:
             try:
                 result = action()
                 self.revivals = 0
+                self.refused_streak = 0
                 return result
             except (OSError, subprocess.TimeoutExpired) as e:
                 try:
                     reason = explain_read_error(path, e)
+                except CloudFileRefused as refused:
+                    self.refused_streak += 1
+                    if self.refused_streak >= self.refused_limit:
+                        # Столько файлов подряд — значит, дело не в файлах, а в самом OneDrive.
+                        self.refused_streak = 0
+                        if not self._revive_onedrive():
+                            raise CloudUnavailable(str(refused)) from e
+                    raise OSError(str(refused)) from e
                 except CloudUnavailable:
                     cloud_failures += 1
                     if not self._revive_onedrive():
